@@ -5,32 +5,34 @@ import { Button } from "antd";
 
 import { VideoSettingsPanel, videoResolutionLabel, videoSecondsLabel, videoSizeLabel } from "@/components/video-settings-panel";
 import { canvasThemes } from "@/lib/canvas-theme";
-import { modelCapabilityConfigFor, resolveVideoRatioValue, resolveVideoResolutionValue } from "@/lib/model-capabilities";
+import { modelCapabilityConfigFor, resolveVideoRatioValue, resolveVideoResolutionValue, workflowVideoCapabilityConfig, type WorkflowVideoFieldLike } from "@/lib/model-capabilities";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { AiConfig } from "@/stores/use-config-store";
 
 type CanvasVideoSettingsPopoverProps = {
     config: AiConfig;
+    workflowFields?: WorkflowVideoFieldLike[];
     onConfigChange: (key: keyof AiConfig, value: string) => void;
     buttonClassName?: string;
     placement?: "topLeft" | "top" | "topRight" | "bottomLeft" | "bottom" | "bottomRight";
 };
 
-export function CanvasVideoSettingsPopover({ config, onConfigChange, buttonClassName, placement = "topLeft" }: CanvasVideoSettingsPopoverProps) {
+export function CanvasVideoSettingsPopover({ config, workflowFields = [], onConfigChange, buttonClassName, placement = "topLeft" }: CanvasVideoSettingsPopoverProps) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const buttonRef = useRef<HTMLSpanElement>(null);
     const panelRef = useRef<HTMLDivElement>(null);
     const [open, setOpen] = useState(false);
     const [buttonRect, setButtonRect] = useState<DOMRect | null>(null);
-    const videoProfile = modelCapabilityConfigFor(config, config.model).video;
+    const videoProfile = workflowFields.length ? workflowVideoCapabilityConfig(workflowFields) : modelCapabilityConfigFor(config, config.model).video;
     const resolutionSupported = Boolean(videoProfile?.resolutions.length);
     const sizeSupported = Boolean(videoProfile?.ratios.length);
     const resolution = videoProfile ? resolveVideoResolutionValue(videoProfile, config.vquality) : "";
     const size = videoProfile ? resolveVideoRatioValue(videoProfile, config.size) : "";
+    const durationSupported = !videoProfile || videoProfile.duration.selection === "range" || Boolean(videoProfile.duration.values?.length);
     const summary = [
         ...(resolutionSupported ? [videoResolutionLabel(resolution)] : []),
         ...(sizeSupported ? [videoSizeLabel(size)] : []),
-        videoSecondsLabel(config.videoSeconds),
+        ...(durationSupported ? [videoSecondsLabel(config.videoSeconds)] : []),
     ].join(" · ");
 
     useEffect(() => {
@@ -54,7 +56,7 @@ export function CanvasVideoSettingsPopover({ config, onConfigChange, buttonClass
         };
     }, [open]);
 
-    const panel = open && buttonRect ? <VideoSettingsPortal buttonRect={buttonRect} panelRef={panelRef} placement={placement} theme={theme} config={config} onConfigChange={onConfigChange} /> : null;
+    const panel = open && buttonRect ? <VideoSettingsPortal buttonRect={buttonRect} panelRef={panelRef} placement={placement} theme={theme} config={config} workflowFields={workflowFields} onConfigChange={onConfigChange} /> : null;
 
     return (
         <>
@@ -74,6 +76,7 @@ function VideoSettingsPortal({
     placement,
     theme,
     config,
+    workflowFields,
     onConfigChange,
 }: {
     buttonRect: DOMRect;
@@ -81,6 +84,7 @@ function VideoSettingsPortal({
     placement: CanvasVideoSettingsPopoverProps["placement"];
     theme: (typeof canvasThemes)[keyof typeof canvasThemes];
     config: AiConfig;
+    workflowFields: WorkflowVideoFieldLike[];
     onConfigChange: (key: keyof AiConfig, value: string) => void;
 }) {
     const gap = 8;
@@ -118,7 +122,7 @@ function VideoSettingsPortal({
             onMouseDown={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
         >
-            <VideoSettingsPanel config={config} onConfigChange={(key, value) => onConfigChange(key, value)} theme={theme} className="space-y-3" />
+            <VideoSettingsPanel config={config} workflowFields={workflowFields} onConfigChange={(key, value) => onConfigChange(key, value)} theme={theme} className="space-y-3" />
         </div>,
         document.body,
     );

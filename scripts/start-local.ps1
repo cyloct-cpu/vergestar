@@ -6,7 +6,7 @@ $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $backendDir = Join-Path $repoRoot "backend"
 $webDir = Join-Path $repoRoot "web"
-$dataDir = Join-Path $repoRoot ".local\project-workbench-debug"
+$dataDir = Join-Path $repoRoot "backend\data"
 $goBuildCache = Join-Path $repoRoot ".local\cache\go-build"
 $goModuleCache = Join-Path $repoRoot ".local\cache\go-mod"
 
@@ -42,7 +42,7 @@ function Test-ListeningPort([int]$Port) {
     }
 }
 
-foreach ($port in @(3000, 8080)) {
+foreach ($port in @(13000, 8080)) {
     if (Test-ListeningPort $port) {
         throw "端口 $port 已被占用，请先关闭占用进程后重试。"
     }
@@ -68,6 +68,7 @@ $backendCommand = @"
 `$ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $backendDirLiteral
 `$env:CANVAS_BACKEND_ADDR = '127.0.0.1:8080'
+`$env:CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS = 'wahaapi.top,metaso.cn,api.aixoras.com,subapi.easy-dotnet.com'
 `$env:CANVAS_BACKEND_DATA_DIR = $dataDirLiteral
 `$env:GOCACHE = $(ConvertTo-PowerShellLiteral $goBuildCache)
 `$env:GOMODCACHE = $(ConvertTo-PowerShellLiteral $goModuleCache)
@@ -79,13 +80,13 @@ $webCommand = @"
 `$ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $webDirLiteral
 `$env:VITE_API_PROXY_TARGET = 'http://127.0.0.1:8080'
-Write-Host '影策前端：http://localhost:3000' -ForegroundColor Cyan
-bun run dev
+Write-Host '影策前端：http://localhost:13000' -ForegroundColor Cyan
+bun run start
 "@
 
 $backendProcess = Start-Process -FilePath $powerShellPath -WindowStyle Normal -WorkingDirectory $backendDir -PassThru -ArgumentList @("-NoLogo", "-NoExit", "-NoProfile", "-Command", $backendCommand)
 $webProcess = Start-Process -FilePath $powerShellPath -WindowStyle Normal -WorkingDirectory $webDir -PassThru -ArgumentList @("-NoLogo", "-NoExit", "-NoProfile", "-Command", $webCommand)
 
-Write-Host "已打开前后端开发窗口。" -ForegroundColor Green
+Write-Host "已打开前后端窗口。" -ForegroundColor Green
 Write-Host "后端窗口 PID: $($backendProcess.Id)；前端窗口 PID: $($webProcess.Id)"
-Write-Host "访问 http://localhost:3000；分别在两个窗口按 Ctrl+C 停止服务。"
+Write-Host "访问 http://localhost:13000；分别在两个窗口按 Ctrl+C 停止服务。"

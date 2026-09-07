@@ -32,6 +32,10 @@ const (
 	// ComfyBridgeRequestKindWorkflowList 和 ComfyBridgeRequestKindWorkflowGet 只用于管理页按需发现。
 	ComfyBridgeRequestKindWorkflowList = "workflow.list"
 	ComfyBridgeRequestKindWorkflowGet  = "workflow.get"
+	// ComfyBridgeRequestKindComfyControl 用于启动、停止和探测本机 ComfyUI。
+	ComfyBridgeRequestKindComfyControl = "comfy.control"
+	// ComfyBridgeRequestKindDirectoryPicker 用于让本地 Bridge 打开系统目录选择器。
+	ComfyBridgeRequestKindDirectoryPicker = "directory.picker"
 )
 
 // CreateComfyBridgeRequest 是用户注册本地 Bridge 时提交的公开信息。
@@ -74,6 +78,14 @@ type ComfyBridgeCompletion struct {
 	Status    string         `json:"status"`
 	Result    map[string]any `json:"result,omitempty"`
 	Error     string         `json:"error,omitempty"`
+}
+
+type ComfyBridgeControlSettings struct {
+	ComfyURL    string `json:"comfyUrl,omitempty"`
+	InstallDir  string `json:"installDir,omitempty"`
+	InstallType string `json:"installType,omitempty"`
+	Port        int    `json:"port,omitempty"`
+	WorkflowDir string `json:"workflowDir,omitempty"`
 }
 
 type comfyBridgeEnvelope struct {
@@ -212,10 +224,81 @@ func (s *Service) TouchComfyBridgeHeartbeat(bridgeID string, capabilities map[st
 
 // EnqueueComfyBridgeRequest 将工作流请求持久化，并返回请求 ID。
 func (s *Service) EnqueueComfyBridgeRequest(ctx context.Context, userID string, bridgeID string, taskID string, payload map[string]any) (*ComfyBridgeRequest, error) {
-	return s.enqueueComfyBridgeRequest(ctx, userID, bridgeID, taskID, "", payload)
+	return s.enqueueComfyBridgeRequest(ctx, userID, bridgeID, taskID, "", ComfyBridgeRequestKindGenerate, payload)
 }
 
-func (s *Service) enqueueComfyBridgeRequest(ctx context.Context, userID string, bridgeID string, taskID string, requestID string, payload map[string]any) (*ComfyBridgeRequest, error) {
+func (s *Service) ControlComfyBridge(ctx context.Context, userID string, bridgeID string, action string, settings ComfyBridgeControlSettings) (map[string]any, error) {
+	action = strings.ToLower(strings.TrimSpace(action))
+	switch action {
+	case "start", "stop", "detect":
+	default:
+		return nil, BadAuthRequest("ComfyUI 控制动作只能是 start、stop 或 detect")
+	}
+	payload := map[string]any{"action": action}
+	if value := strings.TrimSpace(settings.ComfyURL); value != "" {
+		payload["comfyUrl"] = value
+	}
+	if value := strings.TrimSpace(settings.InstallDir); value != "" {
+		payload["installDir"] = value
+	}
+	if value := strings.ToLower(strings.TrimSpace(settings.InstallType)); value == "auto" || value == "portable" || value == "desktop" {
+		payload["installType"] = value
+	}
+	if settings.Port > 0 && settings.Port <= 65535 {
+		payload["port"] = settings.Port
+	}
+	if value := strings.TrimSpace(settings.WorkflowDir); value != "" {
+		payload["workflowDir"] = value
+	}
+	request, err := s.enqueueComfyBridgeRequest(ctx, userID, bridgeID, newID(), "", ComfyBridgeRequestKindComfyControl, payload)
+	if err != nil {
+		return nil, err
+	}
+	completion, err := s.WaitComfyBridgeRequest(ctx, request.ID)
+	if err != nil {
+		s.CancelComfyBridgeRequest(request.ID)
+		return nil, err
+	}
+	if completion.Status != "succeeded" {
+		message := completion.Error
+		if strings.TrimSpace(message) == "" {
+			message = "ComfyUI 控制请求失败"
+		}
+		return nil, BadAuthRequest(message)
+	}
+	return completion.Result, nil
+}
+
+func (s *Service) SelectComfyBridgeDirectory(ctx context.Context, userID string, bridgeID string, title string) (map[string]any, error) {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		title = "选择目录"
+	}
+	if len([]rune(title)) > 80 {
+		return nil, BadAuthRequest("目录选择器标题过长")
+	}
+	request, err := s.enqueueComfyBridgeRequest(ctx, userID, bridgeID, newID(), "", ComfyBridgeRequestKindDirectoryPicker, map[string]any{
+		"title": title,
+	})
+	if err != nil {
+		return nil, err
+	}
+	completion, err := s.WaitComfyBridgeRequest(ctx, request.ID)
+	if err != nil {
+		s.CancelComfyBridgeRequest(request.ID)
+		return nil, err
+	}
+	if completion.Status != "succeeded" {
+		message := completion.Error
+		if strings.TrimSpace(message) == "" {
+			message = "系统目录选择请求失败"
+		}
+		return nil, BadAuthRequest(message)
+	}
+	return completion.Result, nil
+}
+
+func (s *Service) enqueueComfyBridgeRequest(ctx context.Context, userID string, bridgeID string, taskID string, requestID string, kind string, payload map[string]any) (*ComfyBridgeRequest, error) {
 	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
@@ -236,6 +319,9 @@ func (s *Service) enqueueComfyBridgeRequest(ctx context.Context, userID string, 
 	}
 	if !bridge.Enabled {
 		return nil, BadAuthRequest("Bridge 不存在或已撤销")
+	}
+	if bridge.LastSeenAt == nil || time.Since(*bridge.LastSeenAt) > 90*time.Second {
+		return nil, BadAuthRequest("Bridge 离线，请确认本地 Bridge 已启动并保持网络连接")
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
@@ -259,8 +345,11 @@ func (s *Service) enqueueComfyBridgeRequest(ctx context.Context, userID string, 
 		requestID = newID()
 	}
 	now := time.Now()
+	if kind == "" {
+		kind = ComfyBridgeRequestKindGenerate
+	}
 	record, created, err := s.repo.CreateOrGetComfyBridgeRequest(&model.ComfyBridgeRequest{
-		ID: requestID, TaskID: taskID, UserID: userID, BridgeID: bridgeID, Kind: ComfyBridgeRequestKindGenerate,
+		ID: requestID, TaskID: taskID, UserID: userID, BridgeID: bridgeID, Kind: kind,
 		Status: "queued", PayloadJSON: string(encoded), ExpiresAt: now.Add(comfyBridgeRequestTTL), CreatedAt: now, UpdatedAt: now,
 	})
 	if err != nil {

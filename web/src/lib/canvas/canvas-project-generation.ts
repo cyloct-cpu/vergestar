@@ -1,13 +1,13 @@
 import { type GenerationTask } from "@/services/api/task-center";
 import { backendProviderConfig, logicalModelIDForConfig, runBackendGenerationTask, type GenerationTaskDependencies } from "@/services/api/generation-task";
-import { configuredModelMatchesCapability, defaultConfig, normalizeModelOptionValue, normalizeRunningHubCapability, resolveModelRequestConfig, type AiConfig, type WorkflowFieldMapping } from "@/stores/use-config-store";
+import { configuredModelMatchesCapability, defaultConfig, normalizeModelOptionValue, normalizeRunningHubCapability, normalizeSavedWorkflowFields, resolveModelRequestConfig, type AiConfig, type WorkflowFieldMapping } from "@/stores/use-config-store";
 import { resolveImageUrl, uploadImage } from "@/services/image-storage";
 import { resolveMediaUrl } from "@/services/file-storage";
 import { resourceIdFromStorageKey } from "@/services/api/resources";
 import { NODE_DEFAULT_SIZE } from "@/constant/canvas";
 import { normalizeVideoDuration, normalizeVideoResolution } from "@/lib/video-generation-options";
 import { isSeedanceVideoConfig } from "@/lib/seedance-video";
-import { modelCapabilityConfigFor, workflowFieldCurrentValue, workflowFieldHasStoredValue, workflowFieldKey, workflowFieldRandomKey, workflowFieldSubmissionValue, workflowOutputSizeValue, workflowVideoFieldsFromJson } from "@/lib/model-capabilities";
+import { modelCapabilityConfigFor, workflowFieldCurrentValue, workflowFieldHasStoredValue, workflowFieldKey, workflowFieldRandomKey, workflowFieldSubmissionValue, workflowOutputSizeValue } from "@/lib/model-capabilities";
 import { modelRequestOptions, resolveCompatibleModel, resolveModelGenerationDefaults, resolveVideoOperation, type ModelGenerationDefaults, type ModelRequirements } from "@/lib/model-selection";
 import { imageMetadata } from "@/lib/canvas/canvas-generation-task-sync";
 import { ensureMediaNodeMinimumSize } from "@/lib/canvas/canvas-node-size";
@@ -323,11 +323,14 @@ export function buildVideoGenerationMetadata(
 ): CanvasNodeMetadata {
     const metadata = node?.metadata;
     const referenceImageIds = new Set((context?.referenceImages || []).map((image) => image.id));
-    // 工作流视频把已连接媒体交给字段映射处理，不再把历史首尾帧选择当成硬约束。
-    // 这样旧节点切换到 RunningHub/ComfyUI 后，不会因为残留的首尾帧 ID 阻断生成。
-    const workflowVideo = node?.type === CanvasNodeType.Config && ((config?.taskWorkflowProvider === "runninghub" || config?.taskWorkflowProvider === "comfyui") || isCanvasWorkflowProvider(metadata));
-    const startFrame = workflowVideo ? undefined : requireConnectedVideoFrame(metadata?.videoStartFrameNodeId, "首帧", referenceImageIds);
-    const endFrame = workflowVideo ? undefined : requireConnectedVideoFrame(metadata?.videoEndFrameNodeId, "尾帧", referenceImageIds);
+    // 工作流和普通模型都允许首尾帧复用；只把有效连接保留给 metadata。
+    const workflowVideo = (node?.type === CanvasNodeType.Config || isCanvasWorkflowProvider(metadata)) && ((config?.taskWorkflowProvider === "runninghub" || config?.taskWorkflowProvider === "comfyui") || isCanvasWorkflowProvider(metadata));
+    const startFrame = workflowVideo
+        ? (metadata?.videoStartFrameNodeId && referenceImageIds.has(metadata.videoStartFrameNodeId) ? metadata.videoStartFrameNodeId : undefined)
+        : requireConnectedVideoFrame(metadata?.videoStartFrameNodeId, "首帧", referenceImageIds);
+    const endFrame = workflowVideo
+        ? (metadata?.videoEndFrameNodeId && referenceImageIds.has(metadata.videoEndFrameNodeId) ? metadata.videoEndFrameNodeId : undefined)
+        : requireConnectedVideoFrame(metadata?.videoEndFrameNodeId, "尾帧", referenceImageIds);
     return {
         ...(config ? generationWorkflowMetadata(config) : {}),
         videoEditOperation: resolveVideoEditOperation(node, context),
@@ -404,8 +407,11 @@ export function generationWorkflowMetadata(config: AiConfig): Pick<CanvasNodeMet
 }
 
 export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | undefined, mode: CanvasNodeGenerationMode, requirements?: ModelRequirements): AiConfig {
-    // 只有独立 Config 节点读取工作流元数据；普通图片/视频/音频节点始终按基础模型生成。
-    const workflowProvider = mode !== "text" && node?.type === CanvasNodeType.Config
+    // 独立 Config 节点可配置 RunningHub 或 Bridge；普通媒体节点只消费创建时已自动挂载的 Bridge 工作流。
+    const isBridgeMediaNode = (node?.type === CanvasNodeType.Image || node?.type === CanvasNodeType.Video || node?.type === CanvasNodeType.Audio)
+        && resolveCanvasWorkflowProvider(node?.metadata) === "comfyui"
+        && Boolean(node?.metadata?.comfyBridgeWorkflowId?.trim());
+    const workflowProvider = mode !== "text" && node && (node.type === CanvasNodeType.Config || isBridgeMediaNode)
         ? resolveCanvasWorkflowProvider(node.metadata) === "comfyui" ? "comfyui" : "runninghub"
         : "model";
     const defaultModel = mode === "image" ? config.imageModel : mode === "video" ? config.videoModel : mode === "audio" ? config.audioModel : config.textModel;
@@ -413,7 +419,7 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
     const storedModel = resolveCanvasGenerationModel(config, node?.metadata?.model, mode);
     const preferredModel = storedModel || resolveCanvasGenerationModel(config, defaultModel, mode) || fallbackModel;
     // 先合并节点上的实时选择，再做兼容性匹配。否则路由只看到全局默认值，节点改过的时长、分辨率或布尔能力无法参与分流。
-    const workflowParameters = node?.metadata?.workflowParameters || {};
+    const workflowParameters = buildBridgeMediaWorkflowParameters(node, node?.metadata?.workflowParameters || {});
     const runningHubWorkflowId = node?.metadata?.runningHubWorkflowId?.trim() || config.runningHub.workflowId.trim();
     const selectedRunningHubWorkflow = workflowProvider === "runninghub"
         ? config.runningHub.workflows.find((item) => item.workflowId.trim() === runningHubWorkflowId && (!node?.metadata?.runningHubWorkflowKind || (item.kind === "app" ? "app" : "workflow") === node.metadata.runningHubWorkflowKind))
@@ -422,10 +428,12 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
     const selectedComfyBridgeWorkflow = workflowProvider === "comfyui"
         ? config.comfyBridge.workflows.find((item) => item.workflowId.trim() === comfyBridgeWorkflowId)
         : undefined;
+    const modeCapability = mode === "video" || mode === "audio" ? mode : "image";
+    const runningHubCapability = normalizeRunningHubCapability(selectedRunningHubWorkflow?.capability, normalizeRunningHubCapability(config.runningHub.capability));
     const selectedWorkflowFields = workflowProvider === "runninghub"
-        ? selectedRunningHubWorkflow?.fields?.length ? selectedRunningHubWorkflow.fields : workflowVideoFieldsFromJson(selectedRunningHubWorkflow?.workflowJson)
+        ? normalizeSavedWorkflowFields(selectedRunningHubWorkflow, runningHubCapability)
         : workflowProvider === "comfyui"
-            ? selectedComfyBridgeWorkflow?.fields?.length ? selectedComfyBridgeWorkflow.fields : workflowVideoFieldsFromJson(selectedComfyBridgeWorkflow?.workflowJson)
+            ? normalizeSavedWorkflowFields(selectedComfyBridgeWorkflow, modeCapability)
             : [];
     const workflowOutputSize = workflowProvider === "model" ? "" : workflowOutputSizeValue(selectedWorkflowFields, workflowParameters);
     const workflowParameterValue = (source: string) => {
@@ -491,10 +499,9 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
               },
           )
         : {};
-    const modeCapability = mode === "video" || mode === "audio" ? mode : "image";
-    const runningHubCapability = normalizeRunningHubCapability(selectedRunningHubWorkflow?.capability, normalizeRunningHubCapability(config.runningHub.capability));
-    const runningHub = { ...config.runningHub, enabled: workflowProvider === "runninghub" && config.runningHub.enabled, selectedKind: selectedRunningHubWorkflow?.kind === "app" ? "app" as const : "workflow" as const, workflowId: runningHubWorkflowId, capability: runningHubCapability, workflows: workflowProvider === "runninghub" ? config.runningHub.workflows.map((item) => item.workflowId.trim() === runningHubWorkflowId && (!node?.metadata?.runningHubWorkflowKind || (item.kind === "app" ? "app" : "workflow") === node.metadata.runningHubWorkflowKind) ? { ...item, fields: applyWorkflowParameterValues(item.fields?.length ? item.fields : workflowVideoFieldsFromJson(item.workflowJson) as WorkflowFieldMapping[], workflowParameters) } : item) : config.runningHub.workflows };
-    const comfyBridge = { ...config.comfyBridge, enabled: workflowProvider === "comfyui" && config.comfyBridge.enabled, workflowId: comfyBridgeWorkflowId, capability: selectedComfyBridgeWorkflow?.capability || modeCapability, workflows: workflowProvider === "comfyui" ? config.comfyBridge.workflows.map((item) => item.workflowId.trim() === comfyBridgeWorkflowId ? { ...item, fields: applyWorkflowParameterValues(item.fields?.length ? item.fields : workflowVideoFieldsFromJson(item.workflowJson) as WorkflowFieldMapping[], workflowParameters) } : item) : config.comfyBridge.workflows };
+    const runningHub = { ...config.runningHub, enabled: workflowProvider === "runninghub" && config.runningHub.enabled, selectedKind: selectedRunningHubWorkflow?.kind === "app" ? "app" as const : "workflow" as const, workflowId: runningHubWorkflowId, capability: runningHubCapability, workflows: workflowProvider === "runninghub" ? config.runningHub.workflows.map((item) => item.workflowId.trim() === runningHubWorkflowId && (!node?.metadata?.runningHubWorkflowKind || (item.kind === "app" ? "app" : "workflow") === node.metadata.runningHubWorkflowKind) ? { ...item, fields: applyWorkflowParameterValues(normalizeSavedWorkflowFields(item) as WorkflowFieldMapping[], workflowParameters) } : item) : config.runningHub.workflows };
+    const comfyBridgeCapabilities = selectedComfyBridgeWorkflow?.capabilities?.length ? selectedComfyBridgeWorkflow.capabilities : [selectedComfyBridgeWorkflow?.capability || modeCapability];
+    const comfyBridge = { ...config.comfyBridge, enabled: workflowProvider === "comfyui" && config.comfyBridge.enabled, workflowId: comfyBridgeWorkflowId, capability: comfyBridgeCapabilities.includes(modeCapability) ? modeCapability : comfyBridgeCapabilities[0], workflows: workflowProvider === "comfyui" ? config.comfyBridge.workflows.map((item) => item.workflowId.trim() === comfyBridgeWorkflowId ? { ...item, fields: applyWorkflowParameterValues(normalizeSavedWorkflowFields(item) as WorkflowFieldMapping[], workflowParameters) } : item) : config.comfyBridge.workflows };
     return {
         ...requestedConfig,
         taskWorkflowProvider: workflowProvider,
@@ -518,6 +525,34 @@ export function resolveCanvasGenerationModel(config: AiConfig, model: string | u
     const normalized = normalizeModelOptionValue(model, config.channels);
     if (!normalized) return "";
     return configuredModelMatchesCapability(config, normalized, mode) ? normalized : "";
+}
+
+function buildBridgeMediaWorkflowParameters(node: CanvasNodeData | undefined, parameters: Record<string, unknown>): Record<string, unknown> {
+    if (!node || (node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio)) return parameters;
+    const isBridgeMediaNode = Boolean(
+        node.metadata?.comfyBridgeWorkflowId?.trim()
+        && resolveCanvasWorkflowProvider(node.metadata) === "comfyui",
+    );
+    if (!isBridgeMediaNode) return parameters;
+    const sourceValues: Record<string, unknown> = {};
+    if (node.metadata?.size && !hasAnyWorkflowParameterKey(parameters, ["source:size", "source:aspectRatio", "source:aspect_ratio", "source:ratio"])) {
+        sourceValues["source:aspectRatio"] = node.metadata.size;
+        sourceValues["source:size"] = node.metadata.size;
+    }
+    if (node.metadata?.quality && !hasAnyWorkflowParameterKey(parameters, ["source:quality"])) {
+        sourceValues["source:quality"] = node.metadata.quality;
+    }
+    if (node.metadata?.seconds && !hasAnyWorkflowParameterKey(parameters, ["source:videoSeconds", "source:duration", "source:duration_seconds"])) {
+        sourceValues["source:videoSeconds"] = node.metadata.seconds;
+    }
+    if (node.metadata?.vquality && !hasAnyWorkflowParameterKey(parameters, ["source:vquality", "source:videoResolution"])) {
+        sourceValues["source:vquality"] = node.metadata.vquality;
+    }
+    return Object.keys(sourceValues).length ? { ...parameters, ...sourceValues } : parameters;
+}
+
+function hasAnyWorkflowParameterKey(parameters: Record<string, unknown>, keys: readonly string[]) {
+    return keys.some((key) => Object.prototype.hasOwnProperty.call(parameters, key));
 }
 
 function applyWorkflowParameterValues(fields: WorkflowFieldMapping[] | undefined, values: Record<string, unknown>) {
@@ -588,3 +623,5 @@ export function sourceNodeReferenceImages(node: CanvasNodeData | null) {
 export function isAudioFile(file: File) {
     return file.type.startsWith("audio/") || /\.(mp3|wav)$/i.test(file.name);
 }
+
+

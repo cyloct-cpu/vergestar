@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/netip"
@@ -341,10 +342,22 @@ func resolveOutboundHostWithPolicy(ctx context.Context, host string, allowPrivat
 	}
 	addresses, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
 	if err != nil {
-		return nil, BadAuthRequest("外部服务域名解析失败")
+		if !allowPrivateHost {
+			return nil, BadAuthRequest("外部服务域名解析失败")
+		}
+		addresses, err = lookupAllowedHostOverHTTPS(ctx, host)
+		if err != nil {
+			return nil, errors.New("外部服务域名解析失败")
+		}
 	}
 	if len(addresses) == 0 {
 		return nil, BadAuthRequest("外部服务域名没有可用地址")
+	}
+	if allowPrivateHost && customRelayAddressesAreFakeIP(addresses) {
+		if publicAddresses, dohErr := lookupAllowedHostOverHTTPS(ctx, host); dohErr == nil {
+			addresses = append(addresses, publicAddresses...)
+			addresses = deduplicateOutboundIPs(addresses)
+		}
 	}
 	if !allowPrivateHost {
 		for _, ip := range addresses {
@@ -354,6 +367,92 @@ func resolveOutboundHostWithPolicy(ctx context.Context, host string, allowPrivat
 		}
 	}
 	return addresses, nil
+}
+
+func customRelayAddressesAreFakeIP(addresses []net.IP) bool {
+	if len(addresses) == 0 {
+		return false
+	}
+	fakePrefix := netip.MustParsePrefix("198.18.0.0/15")
+	for _, ip := range addresses {
+		address, ok := netip.AddrFromSlice(ip)
+		if !ok {
+			return false
+		}
+		address = address.Unmap()
+		if !fakePrefix.Contains(address) {
+			return false
+		}
+	}
+	return true
+}
+
+func deduplicateOutboundIPs(addresses []net.IP) []net.IP {
+	seen := make(map[string]struct{}, len(addresses))
+	result := make([]net.IP, 0, len(addresses))
+	for _, ip := range addresses {
+		key := ip.String()
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, ip)
+	}
+	return result
+}
+
+type dohResponse struct {
+	Status int `json:"Status"`
+	Answer []struct {
+		Type int    `json:"type"`
+		Data string `json:"data"`
+	} `json:"Answer"`
+}
+
+func lookupAllowedHostOverHTTPS(ctx context.Context, host string) ([]net.IP, error) {
+	if !allowedPrivateUpstreamHost(host) {
+		return nil, errors.New("host is not explicitly allowlisted")
+	}
+	endpoints := []string{
+		"https://223.5.5.5/resolve?name=" + url.QueryEscape(host) + "&type=A",
+		"https://1.1.1.1/dns-query?name=" + url.QueryEscape(host) + "&type=A",
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	for _, endpoint := range endpoints {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			continue
+		}
+		request.Header.Set("Accept", "application/dns-json")
+		response, err := client.Do(request)
+		if err != nil {
+			continue
+		}
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+		_ = response.Body.Close()
+		if readErr != nil || response.StatusCode != http.StatusOK {
+			continue
+		}
+		var parsed dohResponse
+		if json.Unmarshal(body, &parsed) != nil || parsed.Status != 0 {
+			continue
+		}
+		addresses := make([]net.IP, 0, 2)
+		for _, answer := range parsed.Answer {
+			if answer.Type != 1 {
+				continue
+			}
+			ip := net.ParseIP(strings.TrimSpace(answer.Data))
+			if ip == nil {
+				continue
+			}
+			addresses = append(addresses, ip)
+		}
+		if len(addresses) != 0 {
+			return addresses, nil
+		}
+	}
+	return nil, errors.New("DNS over HTTPS lookup failed")
 }
 
 func blockedOutboundIP(ip net.IP) bool {

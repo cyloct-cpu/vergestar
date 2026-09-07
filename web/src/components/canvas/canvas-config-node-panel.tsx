@@ -2,10 +2,11 @@ import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { ChevronDown, Dice5, Image as ImageIcon, LoaderCircle, MessageSquare, Music2, Play, Sparkles, Video, Workflow as WorkflowIcon } from "lucide-react";
 import { Button, Input, InputNumber, Segmented, Select, Slider, Switch, Tooltip } from "antd";
 
-import { configuredModelMatchesCapability, defaultConfig, modelOptionName, normalizeRunningHubCapability, resolveModelChannel, useEffectiveConfig, type AiConfig, type RunningHubCapability, type RunningHubWorkflow, type RunningHubWorkflowKind } from "@/stores/use-config-store";
+import { configuredModelMatchesCapability, defaultConfig, modelOptionName, normalizeRunningHubCapability, normalizeSavedWorkflowFields, resolveModelChannel, useEffectiveConfig, useConfigStore, type AiConfig, type ComfyBridgeWorkflow, type RunningHubCapability, type RunningHubWorkflow, type RunningHubWorkflowKind } from "@/stores/use-config-store";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { normalizeVideoDuration, normalizeVideoResolution } from "@/lib/video-generation-options";
-import { defaultModelCapabilityConfig, modelCapabilityConfigFor, normalizeImageValue, normalizeVideoValue, workflowFieldChoiceValues, workflowFieldCurrentValue, workflowFieldKey, workflowFieldNumberBounds, workflowFieldRandomKey, workflowFieldSubmissionValue, workflowFieldValueError, workflowImageCapabilityConfig, workflowOutputSizeValue, workflowParameterFields, workflowVideoCapabilityConfig, workflowVideoFieldsFromJson, type WorkflowVideoFieldLike } from "@/lib/model-capabilities";
+import { comfyBridgeWorkflowSupports, selectComfyBridgeWorkflowForCapability, trackComfyBridgeWorkflowUse } from "@/lib/comfy-bridge-workflows";
+import { defaultModelCapabilityConfig, modelCapabilityConfigFor, normalizeImageValue, normalizeVideoValue, workflowFieldChoiceValues, workflowFieldCurrentValue, workflowFieldKey, workflowFieldNumberBounds, workflowFieldRandomKey, workflowFieldSubmissionValue, workflowFieldValueError, workflowImageCapabilityConfig, workflowOutputSizeValue, workflowParameterFields, workflowVideoCapabilityConfig, type WorkflowVideoFieldLike } from "@/lib/model-capabilities";
 import { defaultImageParamsForModel, modelCompatibilityError, modelRequestOptions, resolveCompatibleModel, resolveModelGenerationDefaults, type ModelRequirements } from "@/lib/model-selection";
 import { resolveCanvasWorkflowProvider } from "@/lib/canvas/canvas-workflow";
 import type { CanvasAudioSettingKey } from "./canvas-audio-settings-popover";
@@ -50,6 +51,11 @@ function capabilityLabel(capability: RunningHubCapability) {
     return capability === "video" ? "视频" : capability === "audio" ? "音频" : "图片";
 }
 
+function comfyBridgeCapabilityLabel(workflow?: ComfyBridgeWorkflow) {
+    const capabilities = workflow?.capabilities?.length ? workflow.capabilities : [workflow?.capability || "image"];
+    return capabilities.map(capabilityLabel).join(" / ");
+}
+
 function runningHubWorkflowKind(workflow: RunningHubWorkflow): RunningHubWorkflowKind {
     return workflow.kind === "app" ? "app" : "workflow";
 }
@@ -60,6 +66,7 @@ function runningHubWorkflowEntryKey(workflow: RunningHubWorkflow): string {
 
 export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigChange, onGenerate, onComposerToggle, workspaceMode = "professional" }: CanvasConfigNodePanelProps) {
     const globalConfig = useEffectiveConfig();
+    const updateGlobalConfig = useConfigStore((state) => state.updateConfig);
     const runtimeStatuses = usePluginStore((state) => state.runtimeStatuses);
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const mode = node.metadata?.generationMode === "video" || node.metadata?.generationMode === "audio" ? node.metadata.generationMode : "image";
@@ -95,9 +102,9 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
     const selectedRunningHubCapability = selectedRunningHubWorkflow ? normalizeRunningHubCapability(selectedRunningHubWorkflow.capability, defaultWorkflowCapability) : undefined;
     const selectedComfyBridgeWorkflow = globalConfig.comfyBridge.workflows.find((item) => item.workflowId.trim() === node.metadata?.comfyBridgeWorkflowId?.trim());
     const selectedWorkflowFields: WorkflowVideoFieldLike[] = workflowProvider === "runninghub"
-        ? selectedRunningHubWorkflow?.fields?.length ? selectedRunningHubWorkflow.fields : workflowVideoFieldsFromJson(selectedRunningHubWorkflow?.workflowJson)
+        ? normalizeSavedWorkflowFields(selectedRunningHubWorkflow, selectedRunningHubCapability)
         : workflowProvider === "comfyui"
-            ? selectedComfyBridgeWorkflow?.fields?.length ? selectedComfyBridgeWorkflow.fields : workflowVideoFieldsFromJson(selectedComfyBridgeWorkflow?.workflowJson)
+            ? normalizeSavedWorkflowFields(selectedComfyBridgeWorkflow, workflowCapability)
             : [];
     const dynamicWorkflowFields = workflowParameterFields(selectedWorkflowFields);
     useEffect(() => {
@@ -118,10 +125,19 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
             return;
         }
         if (workflowProvider === "comfyui" && !node.metadata?.comfyBridgeWorkflowId?.trim()) {
-            const workflow = globalConfig.comfyBridge.workflows.find((item) => item.capability === workflowCapability);
-            if (workflow) onConfigChange(node.id, { generationMode: workflow.capability, comfyBridgeWorkflowId: workflow.workflowId, workflowParameters: {} });
+            const workflow = selectComfyBridgeWorkflowForCapability(globalConfig, workflowCapability);
+            if (workflow) {
+                onConfigChange(node.id, { generationMode: workflowCapability, comfyBridgeWorkflowId: workflow.workflowId, workflowParameters: {} });
+                const lastUsedWorkflowId = globalConfig.comfyBridge.lastUsedWorkflows?.[workflowCapability];
+                if (lastUsedWorkflowId !== workflow.workflowId) {
+                    updateGlobalConfig("comfyBridge", {
+                        ...globalConfig.comfyBridge,
+                        lastUsedWorkflows: trackComfyBridgeWorkflowUse(globalConfig, workflowCapability, workflow.workflowId),
+                    });
+                }
+            }
         }
-    }, [globalConfig.comfyBridge.workflows, globalConfig.comfyBridge.workflowId, globalConfig.runningHub.capability, globalConfig.runningHub.selectedKind, globalConfig.runningHub.workflowId, globalConfig.runningHub.workflows, mode, node.id, node.metadata?.comfyBridgeWorkflowId, node.metadata?.runningHubWorkflowId, onConfigChange, workflowCapability, workflowProvider]);
+    }, [globalConfig.comfyBridge.lastUsedWorkflows, globalConfig.comfyBridge.workflows, globalConfig.comfyBridge.workflowId, globalConfig.runningHub.capability, globalConfig.runningHub.selectedKind, globalConfig.runningHub.workflowId, globalConfig.runningHub.workflows, mode, node.id, node.metadata?.comfyBridgeWorkflowId, node.metadata?.runningHubWorkflowId, onConfigChange, updateGlobalConfig, workflowCapability, workflowProvider]);
     const runningHubEntries = globalConfig.runningHub.workflows
         // 正常情况下只显示当前模式的条目；旧画布已引用的错配条目保留在列表中，
         // 这样用户可以看到并重新选择，而不是出现“选项消失”的死路。
@@ -143,8 +159,8 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
         ...(runningHubWorkflows.length ? [{ label: <WorkflowOptionGroupLabel label="工作流" count={runningHubWorkflows.length} />, options: runningHubWorkflows }] : []),
     ];
     const comfyBridgeEntries = globalConfig.comfyBridge.workflows
-        .filter((item) => item.capability === workflowCapability || item.workflowId.trim() === node.metadata?.comfyBridgeWorkflowId?.trim())
-        .map((item) => ({ label: item.title || item.workflowId, value: item.workflowId, kind: "workflow" as const, title: `${item.title || item.workflowId} · ${capabilityLabel(item.capability)}` }));
+        .filter((item) => comfyBridgeWorkflowSupports(item, workflowCapability) || item.workflowId.trim() === node.metadata?.comfyBridgeWorkflowId?.trim())
+        .map((item) => ({ label: item.title || item.workflowId, value: item.workflowId, kind: "workflow" as const, title: `${item.title || item.workflowId} · ${comfyBridgeCapabilityLabel(item)}` }));
     const comfyBridgeOptions: WorkflowSelectOption[] = comfyBridgeEntries.length ? [{ label: <WorkflowOptionGroupLabel label="工作流" count={comfyBridgeEntries.length} />, options: comfyBridgeEntries }] : [];
     const chipStyle = { background: theme.node.fill, color: theme.node.text };
     const hasAnyInput = Boolean(inputSummary.textCount || inputSummary.imageCount || inputSummary.videoCount || inputSummary.audioCount || inputSummary.characterCount);
@@ -153,7 +169,7 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
     const capabilityError = workflowParameterError || (workflowProvider === "runninghub"
         ? (!workflowProviderPluginEnabled(runtimeStatuses, "runninghub") ? "RunningHub 工作流插件未启用" : !globalConfig.runningHub.enabled ? "请先在设置中启用 RunningHub" : !node.metadata?.runningHubWorkflowId ? `请选择${capabilityLabel(workflowCapability)}工作流或 App` : !selectedRunningHubWorkflow ? "当前画布引用的 RunningHub 条目已不存在，请重新选择" : selectedRunningHubCapability !== workflowCapability ? `当前条目用途为${capabilityLabel(selectedRunningHubCapability || "image")}，请切换画布模式或重新选择条目` : undefined)
         : workflowProvider === "comfyui"
-            ? (!workflowProviderPluginEnabled(runtimeStatuses, "comfyui") ? "ComfyUI Bridge 工作流插件未启用" : !globalConfig.comfyBridge.enabled ? "请先在设置中启用 ComfyUI Bridge" : !globalConfig.comfyBridge.bridgeId ? "请选择在线 Bridge" : !node.metadata?.comfyBridgeWorkflowId ? `请选择${capabilityLabel(workflowCapability)}工作流` : !selectedComfyBridgeWorkflow ? "当前画布引用的 ComfyUI 条目已不存在，请重新选择" : selectedComfyBridgeWorkflow.capability !== workflowCapability ? `当前条目用途为${capabilityLabel(selectedComfyBridgeWorkflow.capability)}，请切换画布模式或重新选择条目` : undefined)
+            ? (!workflowProviderPluginEnabled(runtimeStatuses, "comfyui") ? "ComfyUI Bridge 工作流插件未启用" : !globalConfig.comfyBridge.enabled ? "请先在设置中启用 ComfyUI Bridge" : !globalConfig.comfyBridge.bridgeId ? "请选择在线 Bridge" : !node.metadata?.comfyBridgeWorkflowId ? `请选择${capabilityLabel(workflowCapability)}工作流` : !selectedComfyBridgeWorkflow ? "当前画布引用的 ComfyUI 条目已不存在，请重新选择" : !comfyBridgeWorkflowSupports(selectedComfyBridgeWorkflow, workflowCapability) ? `当前条目用途为${comfyBridgeCapabilityLabel(selectedComfyBridgeWorkflow)}，请切换画布模式或重新选择条目` : undefined)
             : undefined);
     const canGenerate = (hasComposerContent || (mode === "audio" ? inputSummary.textCount > 0 : hasAnyInput)) && !capabilityError;
 
@@ -308,7 +324,11 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, onConfigC
                                 if (option.data.options) return option.label;
                                 return <WorkflowOptionLabel kind="workflow" label={String(option.data.label || "")} title={String(option.data.title || option.data.label || "")} />;
                             }}
-                            onChange={(value) => onConfigChange(node.id, { comfyBridgeWorkflowId: value, workflowParameters: {} })}
+                            onChange={(value) => {
+                                const workflow = globalConfig.comfyBridge.workflows.find((item) => item.workflowId === value);
+                                onConfigChange(node.id, { comfyBridgeWorkflowId: value, workflowParameters: {} });
+                                if (workflow) updateGlobalConfig("comfyBridge", { ...globalConfig.comfyBridge, lastUsedWorkflows: trackComfyBridgeWorkflowUse(globalConfig, workflowCapability, value) });
+                            }}
                         />
                     ) : null}
                     </div>
@@ -501,10 +521,11 @@ function buildNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode: Can
     const selectedComfyBridgeWorkflow = selectedComfyBridgeWorkflowId
         ? globalConfig.comfyBridge.workflows.find((item) => item.workflowId.trim() === selectedComfyBridgeWorkflowId)
         : undefined;
+    const runningHubCapability = normalizeRunningHubCapability(selectedRunningHubWorkflow?.capability, normalizeRunningHubCapability(globalConfig.runningHub.capability));
     const selectedWorkflowFields = workflowProvider === "runninghub"
-        ? selectedRunningHubWorkflow?.fields?.length ? selectedRunningHubWorkflow.fields : workflowVideoFieldsFromJson(selectedRunningHubWorkflow?.workflowJson)
+        ? normalizeSavedWorkflowFields(selectedRunningHubWorkflow, runningHubCapability)
         : workflowProvider === "comfyui"
-            ? selectedComfyBridgeWorkflow?.fields?.length ? selectedComfyBridgeWorkflow.fields : workflowVideoFieldsFromJson(selectedComfyBridgeWorkflow?.workflowJson)
+            ? normalizeSavedWorkflowFields(selectedComfyBridgeWorkflow, modeCapability)
             : [];
     const capabilityProfile = {
         ...defaultModelCapabilityConfig(),
@@ -522,7 +543,12 @@ function buildNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode: Can
         ? { seconds: String(rawVideoSettings.seconds), ratio: rawVideoSettings.ratio, resolution: rawVideoSettings.resolution }
         : undefined;
     const runningHub = { ...globalConfig.runningHub, enabled: mode !== "text" && workflowProvider === "runninghub" && globalConfig.runningHub.enabled, selectedKind: selectedRunningHubWorkflow ? runningHubWorkflowKind(selectedRunningHubWorkflow) : globalConfig.runningHub.selectedKind, workflowId: selectedRunningHubWorkflowId || "", capability: normalizeRunningHubCapability(selectedRunningHubWorkflow?.capability, normalizeRunningHubCapability(globalConfig.runningHub.capability)) };
-    const comfyBridge = { ...globalConfig.comfyBridge, enabled: mode !== "text" && workflowProvider === "comfyui" && globalConfig.comfyBridge.enabled, workflowId: selectedComfyBridgeWorkflowId || "", capability: selectedComfyBridgeWorkflow?.capability || modeCapability };
+    const comfyBridge = {
+        ...globalConfig.comfyBridge,
+        enabled: mode !== "text" && workflowProvider === "comfyui" && globalConfig.comfyBridge.enabled,
+        workflowId: selectedComfyBridgeWorkflowId || "",
+        capability: selectedComfyBridgeWorkflow && comfyBridgeWorkflowSupports(selectedComfyBridgeWorkflow, modeCapability) ? modeCapability : selectedComfyBridgeWorkflow?.capabilities?.[0] || selectedComfyBridgeWorkflow?.capability || modeCapability,
+    };
     return {
         ...globalConfig,
         taskWorkflowProvider: workflowProvider,
@@ -613,3 +639,4 @@ function audioConfigPatch(key: CanvasAudioSettingKey, value: string) {
     if (key === "audioSpeed") return { audioSpeed: value };
     return { audioInstructions: value };
 }
+

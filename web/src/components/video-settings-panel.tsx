@@ -5,7 +5,7 @@ import { ImageSettingsTheme } from "@/components/image-settings-panel";
 import { boolConfig, isSeedanceFastModel, isSeedanceVideoConfig, normalizeSeedanceDuration, normalizeSeedanceRatio, normalizeSeedanceResolution, seedanceRatioOptions } from "@/lib/seedance-video";
 import { type CanvasTheme } from "@/lib/canvas-theme";
 import { formatVideoResolutionLabel, isVideoResolutionMatch, normalizeVideoDuration, videoDimensionsForRatioAndResolution, videoResolutionComparisonKey, VIDEO_DURATION_MIN } from "@/lib/video-generation-options";
-import { modelCapabilityConfigFor, resolveVideoRatioValue, resolveVideoResolutionValue, videoDurationOptions, type VideoCapabilityConfig } from "@/lib/model-capabilities";
+import { modelCapabilityConfigFor, resolveVideoRatioValue, resolveVideoResolutionValue, videoDurationOptions, workflowVideoCapabilityConfig, type VideoCapabilityConfig, type WorkflowVideoFieldLike } from "@/lib/model-capabilities";
 import { modelOptionName, resolveModelChannel, resolveModelRequestConfig, type AiConfig } from "@/stores/use-config-store";
 
 const sizeOptions = [
@@ -19,14 +19,15 @@ const sizeOptions = [
 
 type VideoSettingsPanelProps = {
     config: AiConfig;
+    workflowFields?: WorkflowVideoFieldLike[];
     onConfigChange: (key: "vquality" | "size" | "videoSeconds" | "videoGenerateAudio" | "videoWatermark" | "videoArkPrivateAssetUpload", value: string) => void;
     theme: CanvasTheme;
     showTitle?: boolean;
     className?: string;
 };
 
-export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[292px] space-y-3" }: VideoSettingsPanelProps) {
-    const profile = modelCapabilityConfigFor(config, config.model).video!;
+export function VideoSettingsPanel({ config, workflowFields = [], onConfigChange, theme, showTitle = true, className = "w-[292px] space-y-3" }: VideoSettingsPanelProps) {
+    const profile = workflowFields.length ? workflowVideoCapabilityConfig(workflowFields) : modelCapabilityConfigFor(config, config.model).video!;
 	const priceTiers = modelPriceTiers(config);
     if (resolveModelRequestConfig(config, config.model).interfaceType === "volcengine-jimeng-video") {
 		return <JiMengVideoSettingsPanel config={config} profile={profile} priceTiers={priceTiers} onConfigChange={onConfigChange} theme={theme} showTitle={showTitle} className={className} />;
@@ -38,8 +39,10 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
     const seconds = normalizeVideoDuration(config.videoSeconds);
     const resolution = resolveVideoResolutionValue(profile, config.vquality);
     const ratio = resolveVideoRatioValue(profile, config.size);
-    const dimensions = videoDimensionsForRatioAndResolution(ratio, resolution);
+    const ratioDisplay = displayVideoRatioValue(ratio);
+    const dimensions = videoDimensionsForRatioAndResolution(ratioDisplay, resolution);
     const sizeSupported = profile.ratios.length > 0;
+    const durationSupported = profile.duration.selection === "range" || Boolean(profile.duration.values?.length);
     const configuredResolutions = profile.resolutions.map((value) => ({ value, label: formatVideoResolutionLabel(value) }));
     const generateAudio = boolConfig(config.videoGenerateAudio, profile.generateAudio.default);
     const watermark = boolConfig(config.videoWatermark, profile.watermark.default);
@@ -49,10 +52,10 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
             <div className={className} style={{ color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()}>
                 {showTitle ? <div className="text-sm font-semibold">视频设置</div> : null}
                 {configuredResolutions.length ? <SettingGroup title="分辨率" color={theme.node.muted}>
-                    <div className="grid grid-cols-3 gap-1.5">
-                        {configuredResolutions.map((item) => (
+                    <div className={`grid gap-1.5 ${configuredResolutions.some((item) => item.label.length > 7) ? "grid-cols-[repeat(2,minmax(0,1fr))]" : "grid-cols-[repeat(3,minmax(0,1fr))]"}`}>
+						{configuredResolutions.map((item) => (
 							<OptionPill key={item.value} selected={isVideoResolutionMatch(resolution, item.value)} disabled={!hasPriceTierForVideoSelection(priceTiers, item.value, Number(seconds))} theme={theme} onClick={() => onConfigChange("vquality", item.value)}>
-                                {item.label}
+                                <span className="min-w-0 truncate" title={item.label}>{compactVideoResolutionLabel(item.label)}</span>
                             </OptionPill>
                         ))}
                     </div>
@@ -63,25 +66,25 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle = 
                         <span className="text-xs opacity-45">×</span>
                         <DimensionValue prefix="H" value={dimensions.height} theme={theme} />
                     </div> : null}
-                    <div className="grid grid-cols-3 gap-1.5">
+                    <div className="grid grid-cols-[repeat(3,minmax(0,1fr))] gap-1.5">
                         {profile.ratios.map((value) => (
                             <button
                                 key={value}
                                 type="button"
                                 className="flex h-8 cursor-pointer items-center justify-center gap-1.5 rounded-md px-1 text-[var(--fs-label)] font-medium transition-colors hover:brightness-110 focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-1"
-                                style={{ background: ratio === value ? theme.toolbar.activeBg : "transparent", color: theme.node.text, outlineColor: theme.node.muted }}
+                                style={{ background: ratioDisplay === displayVideoRatioValue(value) ? theme.toolbar.activeBg : "transparent", color: theme.node.text, outlineColor: theme.node.muted }}
                                 onMouseDown={(event) => event.stopPropagation()}
                                 onClick={() => onConfigChange("size", value)}
                             >
                                 <SizePreview width={ratioPreview(value).width} height={ratioPreview(value).height} color={theme.node.text} />
-                                <span>{value}</span>
+                                <span className="min-w-0 truncate" title={value}>{compactRatioLabel(value)}</span>
                             </button>
                         ))}
                     </div>
                 </SettingGroup> : null}
-                <SettingGroup title="秒数" color={theme.node.muted}>
+                {durationSupported ? <SettingGroup title="秒数" color={theme.node.muted}>
 					<VideoDurationControl profile={profile} value={Number(seconds)} theme={theme} disabled={(value) => !hasPriceTierForVideoSelection(priceTiers, resolution, value)} onChange={(value) => onConfigChange("videoSeconds", String(value))} />
-                </SettingGroup>
+                </SettingGroup> : <SettingGroup title="秒数" color={theme.node.muted}><div className="rounded-md px-2 py-2 text-[var(--fs-tiny)] leading-4 opacity-55">由工作流控制</div></SettingGroup>}
                 {profile.generateAudio.supported || profile.watermark.supported ? <SettingGroup title="输出" color={theme.node.muted}><div className="grid grid-cols-2 gap-3 rounded-md px-2" style={{ background: theme.toolbar.itemHover }}>{profile.generateAudio.supported ? <SwitchRow label="生成声音" checked={generateAudio} theme={theme} onChange={(checked) => onConfigChange("videoGenerateAudio", String(checked))} /> : null}{profile.watermark.supported ? <SwitchRow label="添加水印" checked={watermark} theme={theme} onChange={(checked) => onConfigChange("videoWatermark", String(checked))} /> : null}</div></SettingGroup> : null}
             </div>
         </ImageSettingsTheme>
@@ -95,8 +98,8 @@ function JiMengVideoSettingsPanel({ config, profile, priceTiers, onConfigChange,
             <div className={className} style={{ color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()}>
                 {showTitle ? <div className="text-sm font-semibold">视频设置</div> : null}
                 <SettingGroup title="比例" color={theme.node.muted}>
-                    <div className="grid grid-cols-3 gap-1.5">
-                {profile.ratios.map((value) => <OptionPill key={value} selected={config.size === value} theme={theme} onClick={() => onConfigChange("size", value)}>{value}</OptionPill>)}
+                    <div className="grid grid-cols-[repeat(3,minmax(0,1fr))] gap-1.5">
+                {profile.ratios.map((value) => <OptionPill key={value} selected={config.size === value} theme={theme} onClick={() => onConfigChange("size", value)}><span className="min-w-0 truncate" title={value}>{compactRatioLabel(value)}</span></OptionPill>)}
                     </div>
                 </SettingGroup>
                 <SettingGroup title="秒数" color={theme.node.muted}>
@@ -122,7 +125,7 @@ function SeedanceVideoSettingsPanel({ config, profile, priceTiers, onConfigChang
             <div className={className} style={{ color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()}>
                 {showTitle ? <div className="text-sm font-semibold">视频设置</div> : null}
                 <SettingGroup title="分辨率" color={theme.node.muted}>
-                    <div className="grid grid-cols-3 gap-1.5">
+                    <div className="grid grid-cols-[repeat(3,minmax(0,1fr))] gap-1.5">
                         {profile.resolutions.map((value) => {
                             const item = { value, label: value.toUpperCase() };
 							const disabled = (item.value === "1080p" && isSeedanceFastModel(model)) || !hasPriceTierForVideoSelection(priceTiers, item.value, duration);
@@ -136,7 +139,7 @@ function SeedanceVideoSettingsPanel({ config, profile, priceTiers, onConfigChang
                     {isSeedanceFastModel(model) ? <div className="text-[var(--fs-tiny)] leading-4 opacity-55">fast 模型自动使用 720P</div> : null}
                 </SettingGroup>
                 <SettingGroup title="比例" color={theme.node.muted}>
-                    <div className="grid grid-cols-4 gap-1.5">
+                    <div className="grid grid-cols-[repeat(4,minmax(0,1fr))] gap-1.5">
                         {profile.ratios.map((value) => {
                             const item = { value, label: value };
                             return (
@@ -151,7 +154,7 @@ function SeedanceVideoSettingsPanel({ config, profile, priceTiers, onConfigChang
                                 <span className="grid h-4 place-items-center">
                                     <SizePreview width={ratioPreview(item.value).width} height={ratioPreview(item.value).height} color={theme.node.text} />
                                 </span>
-                                <span className="whitespace-nowrap">{item.label}</span>
+                                <span className="min-w-0 truncate text-center">{item.label}</span>
                             </button>
                             );
                         })}
@@ -187,9 +190,16 @@ export function videoSizeLabel(value: string) {
     if (value === "adaptive" || value === "auto") return "自适应";
     // The compact summary must mirror the selected value (for example 16:9),
     // while the settings panel can still use semantic labels such as 横屏.
+    const workflowRatio = value.match(/^(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)(?:\s|\(|$)/);
+    if (workflowRatio) return `${workflowRatio[1]}:${workflowRatio[2]}`;
     if (ratio === value) return ratio;
     const size = normalizeVideoSizeValue(value);
     return sizeOptions.find((item) => item.value === size)?.label || size;
+}
+
+function displayVideoRatioValue(value: string) {
+    const workflowRatio = value.match(/^(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)(?:\s|\(|$)/);
+    return workflowRatio ? `${workflowRatio[1]}:${workflowRatio[2]}` : value;
 }
 
 export function videoSecondsLabel(value: string) {
@@ -204,7 +214,7 @@ export function normalizeVideoSizeValue(value: string) {
 
 function OptionPill({ selected, disabled = false, theme, onClick, children }: { selected: boolean; disabled?: boolean; theme: CanvasTheme; onClick: () => void; children: ReactNode }) {
     return (
-        <button type="button" disabled={disabled} aria-pressed={selected} className="h-8 cursor-pointer whitespace-nowrap rounded-md px-1 text-[var(--fs-label)] font-medium leading-none transition-colors hover:brightness-110 focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-1 disabled:cursor-not-allowed disabled:opacity-35" style={{ background: selected ? theme.toolbar.activeBg : "transparent", color: theme.node.text, outlineColor: theme.node.muted }} onMouseDown={(event) => event.stopPropagation()} onClick={onClick}>
+        <button type="button" disabled={disabled} aria-pressed={selected} className="flex h-8 min-w-0 cursor-pointer items-center justify-center rounded-md px-1 text-center text-[var(--fs-label)] font-medium leading-none transition-colors hover:brightness-110 focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-1 disabled:cursor-not-allowed disabled:opacity-35" style={{ background: selected ? theme.toolbar.activeBg : "transparent", color: theme.node.text, outlineColor: theme.node.muted }} onMouseDown={(event) => event.stopPropagation()} onClick={onClick}>
             {children}
         </button>
     );
@@ -341,13 +351,28 @@ function SizePreview({ width, height, color }: { width: number; height: number; 
 }
 
 function ratioPreview(ratio: string) {
-    if (ratio === "9:16") return { width: 9, height: 16 };
-    if (ratio === "1:1") return { width: 1, height: 1 };
-    if (ratio === "4:3") return { width: 4, height: 3 };
-    if (ratio === "3:4") return { width: 3, height: 4 };
-    if (ratio === "21:9") return { width: 21, height: 9 };
+    const parts = ratioParts(ratio);
+    if (parts) return parts;
     if (ratio === "adaptive") return { width: 0, height: 0 };
     return { width: 16, height: 9 };
+}
+
+function ratioParts(ratio: string) {
+    const match = ratio.trim().match(/^(\d+(?:\.\d+)?)\s*[:：/]\s*(\d+(?:\.\d+)?)(?:\s*\([^)]*\))?$/);
+    if (!match || Number(match[2]) <= 0) return undefined;
+    return { width: Number(match[1]), height: Number(match[2]) };
+}
+
+function compactRatioLabel(value: string) {
+    const normalized = value.trim();
+    if (normalized.toLowerCase() === "adaptive" || normalized.toLowerCase() === "auto") return "自适应";
+    return normalized.match(/^(\d+(?:\.\d+)?\s*[:：/]\s*\d+(?:\.\d+)?)(?:\s*\([^)]*\))?$/)?.[1]?.replace(/\s+/g, "") || normalized;
+}
+
+function compactVideoResolutionLabel(value: string) {
+    const normalized = value.trim();
+    if (/^\d+\s*[x×]\s*\d+$/i.test(normalized)) return normalized.replace(/\s*[x×]\s*/i, "×").toLowerCase();
+    return normalized.match(/^(\d+(?:\.\d+)?\s*[:：/]\s*\d+(?:\.\d+)?)(?:\s*\([^)]*\))?$/)?.[1]?.replace(/\s+/g, "") || normalized;
 }
 
 function SwitchRow({ label, checked, theme, onChange }: { label: string; checked: boolean; theme: CanvasTheme; onChange: (checked: boolean) => void }) {

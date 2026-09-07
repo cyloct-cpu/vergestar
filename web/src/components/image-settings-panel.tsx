@@ -3,7 +3,7 @@ import { ConfigProvider, Switch } from "antd";
 
 import { type CanvasTheme } from "@/lib/canvas-theme";
 import { buildImageResolutionOptions, formatImageResolutionSize, imageRatioForSize, imageResolutionChoices, imageResolutionOption, imageSizeForResolution, supportsImageResolutionPresets, type ImageResolutionChoice } from "@/lib/image-resolution-tiers";
-import { modelCapabilityConfigFor, normalizeImageValue, type ImageCapabilityConfig } from "@/lib/model-capabilities";
+import { modelCapabilityConfigFor, normalizeImageValue, shortEdgeImageDimensions, workflowImageCapabilityConfig, type ImageCapabilityConfig, type ImageResolutionTier, type WorkflowVideoFieldLike } from "@/lib/model-capabilities";
 import { mergedImageCapabilityConfig } from "@/lib/model-selection";
 import { modelOptionName, resolveModelChannel, type AiConfig } from "@/stores/use-config-store";
 
@@ -40,7 +40,8 @@ const aspectOptions: AspectOption[] = [
 
 type ImageSettingsPanelProps = {
     config: AiConfig;
-    onConfigChange: (key: "quality" | "size" | "transparentBackground" | "count", value: string) => void;
+    workflowFields?: WorkflowVideoFieldLike[];
+    onConfigChange: (key: "quality" | "size" | "transparentBackground" | "count" | "vquality", value: string) => void;
     theme: CanvasTheme;
     showTitle?: boolean;
     showCount?: boolean;
@@ -49,9 +50,11 @@ type ImageSettingsPanelProps = {
     quickCount?: number;
 };
 
-export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = true, showCount = true, className = "w-[304px] space-y-3 rounded-2xl px-1 py-0.5", maxCount = 15, quickCount = 3 }: ImageSettingsPanelProps) {
+export function ImageSettingsPanel({ config, workflowFields = [], onConfigChange, theme, showTitle = true, showCount = true, className = "w-[304px] space-y-3 rounded-2xl px-1 py-0.5", maxCount = 15, quickCount = 3 }: ImageSettingsPanelProps) {
     const [snapDimensionToStep, setSnapDimensionToStep] = useState(true);
-    const profile = mergedImageCapabilityConfig(config, config.model || config.imageModel);
+    const profile = workflowFields.length
+        ? workflowImageCapabilityConfig(workflowFields)
+        : mergedImageCapabilityConfig(config, config.model || config.imageModel);
     const normalized = normalizeImageValue(profile, config);
     const quality = normalized.quality;
     const transparentBackground = normalized.transparentBackground === "true";
@@ -60,33 +63,56 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
     const activeSize = normalized.size;
     const pixelSizeValues = profile.size.values.filter((value) => value.trim().toLowerCase() !== "auto");
     const hasResolutionPresets = supportsImageResolutionPresets(profile.size);
-    const resolutionOptions = hasResolutionPresets ? buildImageResolutionOptions(pixelSizeValues) : [];
+    const resolutionOptions = !profile.resolutionTier && hasResolutionPresets ? buildImageResolutionOptions(pixelSizeValues) : [];
     const activeResolution = activeSize === "auto" ? undefined : imageResolutionOption(resolutionOptions, activeSize);
     const activeRatio = activeResolution?.ratio || imageRatioForSize(activeSize);
-    const resolutionChoices = hasResolutionPresets ? imageResolutionChoices(profile.size.values) : [];
+    const resolutionTier = profile.resolutionTier;
+    const resolutionChoices = !resolutionTier && hasResolutionPresets ? imageResolutionChoices(profile.size.values) : [];
     // 只有一个分辨率层级时，分辨率切换器没有实际选择意义；更重要的是不能因此把比例列表裁剪成当前层级的 3 个像素尺寸。
     // 例如历史 `*` 配置恢复为标准值后，虽然包含 1024x1024/1536x1024/1024x1536，实际仍应展示完整的比例和尺寸选项。
-    const usesResolutionPicker = resolutionChoices.length > 1;
+    const usesResolutionPicker = Boolean(resolutionTier) || resolutionChoices.length > 1;
     const availableAspects: AspectOption[] = usesResolutionPicker && activeSize === "auto"
         ? []
+        : resolutionTier
+        ? shortEdgeAspectOptions(profile)
         : usesResolutionPicker && activeResolution
         ? resolutionOptions.filter((item) => item.tier === activeResolution.tier).map((item) => ({ value: item.ratio, label: item.ratio, size: item.size, width: item.width, height: item.height, icon: item.width === item.height ? "square" : item.width > item.height ? "landscape" : "portrait" }))
         : imageAspectOptions(profile);
     const selectedAspect = availableAspects.find((item) => imageOptionValue(profile, item) === activeSize || item.value === activeSize) || availableAspects.find((item) => item.label === activeRatio);
-    const dimensions = readSizeDimensions(activeSize, selectedAspect || aspectOptions[0]);
+    const activeTier: ImageResolutionTier | undefined = resolutionTier
+        ? (resolutionTier.values.includes(config.vquality as ImageResolutionTier) ? config.vquality as ImageResolutionTier : resolutionTier.default)
+        : undefined;
+    const shortEdgeDimensions = resolutionTier && activeTier && (selectedAspect || availableAspects[0])
+        ? shortEdgeImageDimensions(imageOptionValue(profile, selectedAspect || availableAspects[0]), activeTier)
+        : undefined;
+    const dimensions = shortEdgeDimensions || readSizeDimensions(activeSize, selectedAspect || aspectOptions[0]);
 	const activeQualityOptions = profile.quality.values.map((value) => qualityOptions.find((item) => item.value === value) || { value, label: value });
 	const priceTiers = imageModelPriceTiers(config);
     const selectAspect = (value: string) => {
         const option = availableAspects.find((item) => item.value === value);
+        if (resolutionTier) {
+            onConfigChange("size", imageOptionValue(profile, option || availableAspects[0]));
+            return;
+        }
         onConfigChange("size", option ? imageOptionValue(profile, option) : "auto");
     };
-    const selectResolution = (choice: ImageResolutionChoice) => {
+    const selectResolution = (choice: ImageResolutionChoice | ImageResolutionTier) => {
         if (choice === "auto") {
             onConfigChange("size", "auto");
             return;
         }
+        if (resolutionTier && resolutionTier.values.includes(choice as ImageResolutionTier)) {
+            onConfigChange("vquality", choice);
+            const ratio = selectedAspect || availableAspects[0];
+            if (ratio && profile.size.parameter === "size") {
+                const dimensions = shortEdgeImageDimensions(imageOptionValue(profile, ratio), choice);
+                if (dimensions) onConfigChange("size", `${dimensions.width}x${dimensions.height}`);
+            }
+            return;
+        }
+        const presetChoice = choice.toLowerCase() as "1k" | "2k" | "4k";
         const ratio = activeRatio || availableAspects[0]?.label;
-        const size = imageSizeForResolution(resolutionOptions, choice, ratio) || resolutionOptions.find((item) => item.tier === choice)?.size;
+        const size = imageSizeForResolution(resolutionOptions, presetChoice, ratio) || resolutionOptions.find((item) => item.tier === presetChoice)?.size;
         if (size) onConfigChange("size", size);
     };
     const updateDimension = (key: "width" | "height", value: number | null) => {
@@ -110,7 +136,7 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                 {showTitle ? <div className="text-base font-semibold">图像设置</div> : null}
                 {profile.quality.supported ? <div className="space-y-2">
                     <SettingTitle color={theme.node.muted}>{isGrokResolutionQuality(profile) ? "分辨率" : "质量"}</SettingTitle>
-                    <div className={`grid gap-1.5 ${activeQualityOptions.length <= 2 ? "grid-cols-2" : "grid-cols-4"}`}>
+                    <div className={`grid gap-1.5 ${activeQualityOptions.length <= 2 ? "grid-cols-[repeat(2,minmax(0,1fr))]" : "grid-cols-[repeat(4,minmax(0,1fr))]}"}`}>
 						{activeQualityOptions.map((item) => (
 							<OptionPill key={item.value} selected={quality === item.value} disabled={!hasPriceTierForImageSelection(priceTiers, item.value, activeSize)} theme={theme} onClick={() => onConfigChange("quality", item.value)}>
                                 {item.label}
@@ -133,9 +159,18 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                         />
                     </span>
                 </div> : null}
-                {resolutionChoices.length ? <div className="space-y-2">
+                {resolutionTier ? <div className="space-y-2">
                     <SettingTitle color={theme.node.muted}>分辨率</SettingTitle>
-                    <div className={`grid gap-1.5 ${resolutionChoices.length <= 2 ? "grid-cols-2" : resolutionChoices.length === 4 ? "grid-cols-4" : "grid-cols-3"}`}>
+                    <div className="grid grid-cols-[repeat(3,minmax(0,1fr))] gap-1.5">
+                        {resolutionTier.values.map((choice) => (
+                            <OptionPill key={choice} selected={activeTier === choice} theme={theme} onClick={() => selectResolution(choice)}>
+                                {choice}
+                            </OptionPill>
+                        ))}
+                    </div>
+                </div> : resolutionChoices.length ? <div className="space-y-2">
+                    <SettingTitle color={theme.node.muted}>分辨率</SettingTitle>
+                    <div className={`grid gap-1.5 ${resolutionChoices.length <= 2 ? "grid-cols-[repeat(2,minmax(0,1fr))]" : resolutionChoices.length === 4 ? "grid-cols-[repeat(4,minmax(0,1fr))]" : "grid-cols-[repeat(3,minmax(0,1fr))]"}`}>
                         {resolutionChoices.map((choice) => (
                             <OptionPill key={choice} selected={choice === "auto" ? activeSize === "auto" : activeResolution?.tier === choice} theme={theme} onClick={() => selectResolution(choice)}>
                                 {choice === "auto" ? "自动" : choice.toUpperCase()}
@@ -163,7 +198,7 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                 </div> : null}
                 {availableAspects.length ? <div className="space-y-2">
                     <SettingTitle color={theme.node.muted}>尺寸或比例</SettingTitle>
-                    <div className="grid grid-cols-4 gap-1.5 min-[380px]:grid-cols-5">
+                    <div className="grid grid-cols-[repeat(4,minmax(0,1fr))] gap-1.5 min-[380px]:grid-cols-[repeat(5,minmax(0,1fr))]">
                         {availableAspects.map((item) => (
                             <button
                                 key={item.value}
@@ -174,7 +209,7 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                                 onClick={() => selectAspect(item.value)}
                             >
                                 <AspectIcon type={item.icon} width={item.width} height={item.height} color={theme.node.text} />
-                                <span className="whitespace-nowrap">{item.label}</span>
+                                <span className="max-w-full min-w-0 truncate" title={item.label}>{item.label}</span>
                             </button>
                         ))}
                     </div>
@@ -182,7 +217,7 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                 {showCount && effectiveMaxCount > 1 ? (
                     <div className="space-y-2">
                         <SettingTitle color={theme.node.muted}>生成张数</SettingTitle>
-                        <div className="grid grid-cols-4 gap-1.5">
+                        <div className="grid grid-cols-[repeat(4,minmax(0,1fr))] gap-1.5">
                             {Array.from({ length: Math.min(quickCount, effectiveMaxCount) }, (_, index) => index + 1).map((value) => (
                                 <OptionPill key={value} selected={count === value} theme={theme} onClick={() => onConfigChange("count", String(value))}>
                                     {value}
@@ -212,23 +247,56 @@ function imageAspectOptions(profile: ImageCapabilityConfig): AspectOption[] {
         const known = aspectOptions.find((item) => (item.size || item.value) === value || item.value === value);
         if (known) return known;
         const parts = ratioParts(value);
-        return { value, label: value, size: value, width: parts?.width || 0, height: parts?.height || 0, icon: "custom" };
+        return { value, label: compactImageSizeLabel(value), size: value, width: parts?.width || 0, height: parts?.height || 0, icon: "custom" };
     });
 }
 
 function ratioParts(value: string) {
-    const pixel = value.trim().match(/^(\d+)x(\d+)$/i);
+    const normalized = value.trim();
+    const pixel = normalized.match(/^(\d+)\s*[x×]\s*(\d+)(?:\s*\([^)]*\))?$/i);
     if (pixel) {
         const divisor = gcd(Number(pixel[1]), Number(pixel[2]));
         return { width: Number(pixel[1]) / divisor, height: Number(pixel[2]) / divisor };
     }
-    const ratio = value.trim().match(/^(\d+):(\d+)$/);
+    const ratio = normalized.match(/^(\d+(?:\.\d+)?)\s*[:：/]\s*(\d+(?:\.\d+)?)(?:\s*\([^)]*\))?$/);
     if (!ratio) return undefined;
-    return { width: Number(ratio[1]), height: Number(ratio[2]) };
+    return {
+        width: Number(ratio[1]),
+        height: Math.max(1, Number(ratio[2])),
+    };
+}
+
+function shortEdgeAspectOptions(profile: ImageCapabilityConfig): AspectOption[] {
+    if (profile.size.parameter === "aspect_ratio") {
+        return profile.size.values.filter((value) => value.trim().toLowerCase() !== "auto").map((value) => {
+            const parts = ratioParts(value);
+            return { value, label: compactImageSizeLabel(value), size: value, width: parts?.width || 0, height: parts?.height || 0, icon: iconTypeForRatio(parts) };
+        });
+    }
+    const ratios = new Set<string>();
+    const options: AspectOption[] = [];
+    for (const value of profile.size.values) {
+        const parsed = buildImageResolutionOptions([value])[0];
+        if (!parsed || ratios.has(parsed.ratio)) continue;
+        ratios.add(parsed.ratio);
+        options.push({ value: parsed.ratio, label: parsed.ratio, size: parsed.ratio, width: parsed.width, height: parsed.height, icon: iconTypeForRatio({ width: parsed.width, height: parsed.height }) });
+    }
+    return options;
+}
+
+function iconTypeForRatio(parts: { width: number; height: number } | undefined) {
+    if (!parts?.width || !parts.height) return "custom";
+    return parts.width === parts.height ? "square" : parts.width > parts.height ? "landscape" : "portrait";
 }
 
 function gcd(a: number, b: number): number {
     return b ? gcd(b, a % b) : a;
+}
+
+function compactImageSizeLabel(value: string) {
+    const normalized = value.trim();
+    if (normalized.toLowerCase() === "auto") return "自动";
+    return normalized.match(/^(\d+(?:\.\d+)?\s*[:：/]\s*\d+(?:\.\d+)?)(?:\s*\([^)]*\))?$/)?.[1]?.replace(/\s+/g, "") || normalized;
 }
 
 function imageOptionValue(profile: ImageCapabilityConfig, option: AspectOption) {
@@ -263,6 +331,11 @@ export function imageSizeLabel(size: string) {
     return resolutionLabel !== size ? resolutionLabel : aspectOptions.find((item) => (item.size || item.value) === size || item.value === size)?.label || size;
 }
 
+export function imageResolutionTierLabel(value: string | undefined, profile?: ImageCapabilityConfig) {
+    if (!profile?.resolutionTier || !value || !profile.resolutionTier.values.includes(value as ImageResolutionTier)) return "";
+    return value;
+}
+
 function imageModelPriceTiers(config: AiConfig) {
 	const channel = resolveModelChannel(config, config.model || config.imageModel);
 	const cost = channel.modelCosts?.find((item) => item.model === modelOptionName(config.model || config.imageModel));
@@ -281,7 +354,7 @@ function OptionPill({ selected, disabled = false, theme, onClick, children }: { 
     return (
         <button
             type="button"
-			className="h-8 cursor-pointer rounded-full px-2 text-xs transition-colors hover:brightness-110 focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-1 disabled:cursor-not-allowed disabled:opacity-40"
+			className="flex h-8 min-w-0 cursor-pointer items-center justify-center overflow-hidden rounded-full px-2 text-xs transition-colors hover:brightness-110 focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-1 disabled:cursor-not-allowed disabled:opacity-40"
 			style={{ background: selected ? theme.toolbar.activeBg : "transparent", color: theme.node.text, outlineColor: theme.node.muted }}
 			disabled={disabled}
             onMouseDown={(event) => event.stopPropagation()}
@@ -351,7 +424,7 @@ function CountInput({ value, quickCount, max, theme, onChange }: { value: number
 
 function AspectIcon({ type, width, height, color }: { type: string; width: number; height: number; color: string }) {
     if (type === "auto") return null;
-    const ratio = width / Math.max(1, height);
+    const ratio = width > 0 && height > 0 ? width / height : 1;
     const boxWidth = ratio >= 1 ? 22 : Math.max(9, 22 * ratio);
     const boxHeight = ratio >= 1 ? Math.max(9, 22 / ratio) : 22;
     return (

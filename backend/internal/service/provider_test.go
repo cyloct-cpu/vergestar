@@ -175,7 +175,8 @@ func TestSystemChannelIDFromBaseURLSupportsShortAndLegacyProxyPaths(t *testing.T
 	for _, test := range []struct{ base, want string }{
 		{base: "/api/channel-1", want: "channel-1"},
 		{base: "/api/ai/system/channel-2", want: "channel-2"},
-		{base: "https://canvas.example.com/api/channel-3", want: "channel-3"},
+		{base: "https://canvas.example.com/api/ai/system/channel-3", want: "channel-3"},
+		{base: "https://metaso.cn/api/minimax", want: ""},
 	} {
 		if got := systemChannelIDFromBaseURL(test.base); got != test.want {
 			t.Fatalf("systemChannelIDFromBaseURL(%q) = %q, want %q", test.base, got, test.want)

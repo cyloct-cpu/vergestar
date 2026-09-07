@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 
+import { buildVideoGenerationMetadata } from "../src/lib/canvas/canvas-project-generation";
 import { listVideoReferenceModels, validateVideoSegmentBatch, videoReferenceOperationError, videoReferenceRegenerationError, videoReferenceSegmentError } from "../src/lib/canvas/canvas-video-regeneration";
+import { CanvasNodeType, type CanvasNodeData } from "../src/types/canvas";
 import { defaultModelCapabilityConfig } from "../src/lib/model-capabilities";
 import { defaultConfig, type AiConfig, type ModelChannel } from "../src/stores/use-config-store";
 
@@ -124,5 +126,47 @@ describe("validateVideoSegmentBatch", () => {
 
     test("片段超过模型时长上限时返回片段错误", () => {
         expect(validateVideoSegmentBatch(supportedVideoConfig({ maxVideoDurationSeconds: 15 }), [{ startMs: 0, endMs: 16000 }], "extend")).toContain("不能超过当前模型参考视频上限");
+    });
+});
+
+describe("buildVideoGenerationMetadata", () => {
+    test("Bridge 工作流保留已连接的首尾帧角色", () => {
+        const node = {
+            id: "video",
+            type: CanvasNodeType.Config,
+            metadata: { videoStartFrameNodeId: "start", videoEndFrameNodeId: "end", comfyBridgeWorkflowId: "first-last-workflow" },
+        } as CanvasNodeData;
+        const context = {
+            referenceImages: [
+                { id: "start", name: "start.png", type: "image/png", dataUrl: "", url: "https://cdn.example.com/start.png" },
+                { id: "end", name: "end.png", type: "image/png", dataUrl: "", url: "https://cdn.example.com/end.png" },
+            ],
+            referenceVideos: [],
+            referenceAudios: [],
+        };
+
+        const metadata = buildVideoGenerationMetadata(node, context);
+        expect(metadata.videoStartFrameNodeId).toBe("start");
+        expect(metadata.videoEndFrameNodeId).toBe("end");
+    });
+
+    test("普通模型也允许首尾帧引用同一张图片", () => {
+        const node = {
+            id: "video",
+            type: CanvasNodeType.Video,
+            metadata: { videoStartFrameNodeId: "start", videoEndFrameNodeId: "end" },
+        } as CanvasNodeData;
+        const context = {
+            referenceImages: [
+                { id: "start", name: "start.png", type: "image/png", dataUrl: "data:image/png;base64,same" },
+                { id: "end", name: "end.png", type: "image/png", dataUrl: "data:image/png;base64,same" },
+            ],
+            referenceVideos: [],
+            referenceAudios: [],
+        };
+
+        const metadata = buildVideoGenerationMetadata(node, context);
+        expect(metadata.videoStartFrameNodeId).toBe("start");
+        expect(metadata.videoEndFrameNodeId).toBe("end");
     });
 });

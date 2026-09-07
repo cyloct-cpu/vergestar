@@ -15,7 +15,18 @@ import { CanvasNodeType, type CanvasGenerationMode, type CanvasNodeData, type Ca
 export function generationTaskInput(task: GenerationTask) {
     if (!task.inputJson) return null;
     try {
-        return JSON.parse(task.inputJson) as { mode?: CanvasGenerationMode; metadata?: { nodeId?: string; sourceNodeId?: string }; prompt?: string };
+        return JSON.parse(task.inputJson) as {
+            mode?: CanvasGenerationMode;
+            metadata?: {
+                nodeId?: string;
+                sourceNodeId?: string;
+                workflowProvider?: CanvasNodeMetadata["workflowProvider"];
+                runningHubWorkflowId?: string;
+                runningHubWorkflowKind?: CanvasNodeMetadata["runningHubWorkflowKind"];
+                comfyBridgeWorkflowId?: string;
+            };
+            prompt?: string;
+        };
     } catch {
         return null;
     }
@@ -97,13 +108,14 @@ export function audioMetadata(audio: UploadedFile): CanvasNodeMetadata {
     };
 }
 
-function workflowMetadataForResultNode(): Partial<CanvasNodeMetadata> {
+function workflowMetadataForResultNode(task: GenerationTask): Partial<CanvasNodeMetadata> {
+    const metadata = generationTaskInput(task)?.metadata;
+    if (!metadata) return {};
     return {
-        workflowProvider: undefined,
-        runningHubWorkflowId: undefined,
-        runningHubWorkflowKind: undefined,
-        comfyBridgeWorkflowId: undefined,
-        workflowParameters: undefined,
+        workflowProvider: metadata.workflowProvider,
+        runningHubWorkflowId: metadata.runningHubWorkflowId,
+        runningHubWorkflowKind: metadata.runningHubWorkflowKind,
+        comfyBridgeWorkflowId: metadata.comfyBridgeWorkflowId,
     };
 }
 
@@ -144,7 +156,7 @@ export async function buildGenerationTaskNodeResult(node: CanvasNodeData, task: 
             width: imageSize.width,
             height: imageSize.height,
             position: { x: node.position.x + node.width / 2 - imageSize.width / 2, y: node.position.y + node.height / 2 - imageSize.height / 2 },
-            metadata: { ...node.metadata, ...workflowMetadataForResultNode(), ...imageMetadata(normalizedImage), prompt, ...completedTaskMetadata(task), errorDetails: undefined },
+            metadata: { ...node.metadata, ...workflowMetadataForResultNode(task), ...imageMetadata(normalizedImage), prompt, ...completedTaskMetadata(task), errorDetails: undefined },
         };
     }
 
@@ -173,7 +185,7 @@ export async function buildGenerationTaskNodeResult(node: CanvasNodeData, task: 
             ...node,
             type: CanvasNodeType.Video,
             ...geometry,
-            metadata: { ...node.metadata, ...workflowMetadataForResultNode(), ...videoMetadata(video), prompt, ...completedTaskMetadata(task), errorDetails: undefined },
+            metadata: { ...node.metadata, ...workflowMetadataForResultNode(task), ...videoMetadata(video), prompt, ...completedTaskMetadata(task), errorDetails: undefined },
         };
     }
 
@@ -182,7 +194,7 @@ export async function buildGenerationTaskNodeResult(node: CanvasNodeData, task: 
         const audio = result.audio.storageKey
             ? { url: await resolveMediaUrl(result.audio.storageKey, result.audio.dataUrl), storageKey: result.audio.storageKey, durationMs: result.audio.durationMs, bytes: result.audio.bytes || 0, mimeType: result.audio.mimeType || "audio/mpeg" }
             : await storeGeneratedAudio(await (await fetch(result.audio.dataUrl)).blob(), result.audio.format || "mp3");
-        return { ...node, type: CanvasNodeType.Audio, metadata: { ...node.metadata, ...workflowMetadataForResultNode(), ...audioMetadata(audio), prompt, ...completedTaskMetadata(task), errorDetails: undefined } };
+        return { ...node, type: CanvasNodeType.Audio, metadata: { ...node.metadata, ...workflowMetadataForResultNode(task), ...audioMetadata(audio), prompt, ...completedTaskMetadata(task), errorDetails: undefined } };
     }
 
     if (!result.text) throw new Error("后端任务没有返回文本");

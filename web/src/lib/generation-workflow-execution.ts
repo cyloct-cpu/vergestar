@@ -1,4 +1,4 @@
-import { normalizeRunningHubCapability, type AiConfig, type RunningHubCapability, type RunningHubWorkflowKind, type WorkflowFieldMapping } from "@/stores/use-config-store";
+import { normalizeRunningHubCapability, normalizeSavedWorkflowFields, type AiConfig, type RunningHubCapability, type RunningHubWorkflowKind, type WorkflowFieldMapping } from "@/stores/use-config-store";
 import { workflowProviderPluginEnabled } from "@/lib/plugins/builtin/workflows";
 import { usePluginStore } from "@/stores/use-plugin-store";
 
@@ -37,7 +37,7 @@ export function resolveGenerationWorkflowExecution(config: AiConfig, mode: Gener
         const workflow = runningHub.workflows.find((item) => item.workflowId.trim() === workflowId && (item.kind === "app" ? "app" : "workflow") === kind);
         if (!workflow) throw new Error("当前 RunningHub 工作流条目不存在，请重新选择已保存条目");
         const capability = normalizeRunningHubCapability(workflow.capability, normalizeRunningHubCapability(runningHub.capability));
-        assertWorkflowCapability("RunningHub", capability, mode);
+        assertWorkflowCapabilities("RunningHub", [capability], mode);
         const webappId = kind === "app" ? (workflow.webappId || workflow.workflowId).trim() : "";
         const name = workflow.title?.trim() || webappId || workflowId;
         return {
@@ -51,7 +51,7 @@ export function resolveGenerationWorkflowExecution(config: AiConfig, mode: Gener
             workflowId: kind === "workflow" ? workflowId : "",
             webappId,
             workflowJson: workflow.workflowJson || {},
-            workflowFields: workflow.fields || [],
+            workflowFields: normalizeSavedWorkflowFields(workflow, capability),
             bridgeId: "",
         };
     }
@@ -64,8 +64,11 @@ export function resolveGenerationWorkflowExecution(config: AiConfig, mode: Gener
     }
     const workflow = comfyBridge.workflows.find((item) => item.workflowId.trim() === workflowId);
     if (!workflow) throw new Error("当前 ComfyUI 工作流条目不存在，请重新选择已保存条目");
-    const capability = normalizeRunningHubCapability(workflow.capability, normalizeRunningHubCapability(comfyBridge.capability));
-    assertWorkflowCapability("ComfyUI", capability, mode);
+    const capabilities = workflow.capabilities?.length
+        ? workflow.capabilities
+        : [normalizeRunningHubCapability(workflow.capability, normalizeRunningHubCapability(comfyBridge.capability))];
+    assertWorkflowCapabilities("ComfyUI", capabilities, mode);
+    const capability = capabilities.find((item) => item === mode) || capabilities[0];
     const name = workflow.title?.trim() || workflowId;
     return {
         provider: "comfyui-bridge",
@@ -78,14 +81,14 @@ export function resolveGenerationWorkflowExecution(config: AiConfig, mode: Gener
         workflowId,
         webappId: "",
         workflowJson: workflow.workflowJson || {},
-        workflowFields: workflow.fields || [],
+        workflowFields: normalizeSavedWorkflowFields(workflow, capability),
         bridgeId: comfyBridge.bridgeId.trim(),
     };
 }
 
-function assertWorkflowCapability(providerName: string, capability: RunningHubCapability, mode: GenerationWorkflowMode) {
-    if (capability === mode) return;
-    const capabilityName = workflowCapabilityName(capability);
+function assertWorkflowCapabilities(providerName: string, capabilities: RunningHubCapability[], mode: GenerationWorkflowMode) {
+    if (capabilities.includes(mode as RunningHubCapability)) return;
+    const capabilityName = capabilities.map(workflowCapabilityName).join(" / ");
     const modeName = workflowCapabilityName(mode);
     throw new Error(`${providerName} 已保存条目的用途为${capabilityName}，当前节点是${modeName}生成，请切换匹配的工作流`);
 }

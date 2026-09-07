@@ -12,8 +12,9 @@ import { CanvasNodeType, type CanvasConnection, type CanvasFolderStyle, type Can
 import { cloneCanvasDrawing } from "@/lib/canvas/canvas-drawing-storage";
 import { isDrawingEngineAvailable, type CanvasDrawingEngine } from "@/lib/canvas/canvas-drawing-engine";
 import { useUserStore } from "@/stores/use-user-store";
-import { useEffectiveConfig } from "@/stores/use-config-store";
+import { useEffectiveConfig, normalizeRunningHubCapability, useConfigStore } from "@/stores/use-config-store";
 import { createDefaultPortraitClearanceState, PORTRAIT_CLEARANCE_NODE_TYPE } from "@/lib/portrait-clearance/contracts";
+import { selectComfyBridgeWorkflowForCapability, trackComfyBridgeWorkflowUse } from "@/lib/comfy-bridge-workflows";
 import { workflowProviderPluginEnabled } from "@/lib/plugins/builtin/workflows";
 import { usePluginStore } from "@/stores/use-plugin-store";
 
@@ -59,6 +60,7 @@ export function useCanvasNodeOperations({
 }: UseCanvasNodeOperationsOptions) {
     const { message } = App.useApp();
     const effectiveConfig = useEffectiveConfig();
+    const updateConfig = useConfigStore((state) => state.updateConfig);
     const tldrawLicenseKey = useUserStore((state) => state.drawingEngine.tldrawLicenseKey);
     const runtimeStatuses = usePluginStore((state) => state.runtimeStatuses);
     const clipboardRef = useRef<CanvasClipboard | null>(null);
@@ -140,20 +142,51 @@ export function useCanvasNodeOperations({
             message.error(`${selectedWorkflowProvider === "runninghub" ? "RunningHub" : "ComfyUI"} 工作流插件未启用`);
             return;
         }
+        const capability = type === CanvasNodeType.Video ? "video" as const : type === CanvasNodeType.Audio ? "audio" as const : "image" as const;
         const workflowTitle = type === CanvasNodeType.Config && selectedWorkflowProvider === "runninghub" ? "RunningHub 工作流" : type === CanvasNodeType.Config && selectedWorkflowProvider === "comfyui" ? "ComfyUI Bridge" : undefined;
+        const bridgeMedia = type === CanvasNodeType.Image || type === CanvasNodeType.Video || type === CanvasNodeType.Audio;
+        const bridgeMediaReady = bridgeMedia
+            && workflowProviderPluginEnabled(runtimeStatuses, "comfyui")
+            && effectiveConfig.comfyBridge.enabled
+            && Boolean(effectiveConfig.comfyBridge.bridgeId.trim());
+        const comfyBridgeWorkflow = type === CanvasNodeType.Config && selectedWorkflowProvider === "comfyui"
+            ? selectComfyBridgeWorkflowForCapability(effectiveConfig, "image")
+            : bridgeMediaReady
+                ? selectComfyBridgeWorkflowForCapability(effectiveConfig, capability)
+                : undefined;
+        if (bridgeMediaReady && !comfyBridgeWorkflow) {
+            message.warning(`当前 Bridge 没有${capability === "video" ? "视频" : capability === "audio" ? "音频" : "图片"}用途的工作流，将使用普通模型生成`);
+        }
+        const comfyBridgeWorkflowMode = comfyBridgeWorkflow
+            ? (comfyBridgeWorkflow.capabilities?.includes(capability) ? capability : normalizeRunningHubCapability(comfyBridgeWorkflow.capabilities?.[0] || comfyBridgeWorkflow.capability))
+            : capability;
         const metadata: CanvasNodeMetadata | undefined = type === CanvasNodeType.Drawing
             ? { drawingEngine: defaultDrawingEngine }
-            : type === CanvasNodeType.Config
-                ? { generationMode: "image", workflowProvider: selectedWorkflowProvider || "model" }
+                : type === CanvasNodeType.Config
+                ? {
+                    generationMode: selectedWorkflowProvider === "comfyui" ? comfyBridgeWorkflowMode : "image",
+                    workflowProvider: selectedWorkflowProvider || "model",
+                    ...(comfyBridgeWorkflow ? { comfyBridgeWorkflowId: comfyBridgeWorkflow.workflowId } : {}),
+                }
+                : bridgeMedia && comfyBridgeWorkflow
+                ? {
+                    generationMode: capability,
+                    workflowProvider: "comfyui",
+                    comfyBridgeWorkflowId: comfyBridgeWorkflow.workflowId,
+                    workflowTitle: comfyBridgeWorkflow.title?.trim() || comfyBridgeWorkflow.workflowId,
+                }
                 : type === PORTRAIT_CLEARANCE_NODE_TYPE
                     ? { portraitClearance: createDefaultPortraitClearanceState() }
                     : undefined;
         const node = createCanvasNode(type, position || getCanvasCenter(), metadata);
         if (workflowTitle) node.title = workflowTitle;
+        if (bridgeMedia && comfyBridgeWorkflow) {
+            updateConfig("comfyBridge", { ...effectiveConfig.comfyBridge, lastUsedWorkflows: trackComfyBridgeWorkflowUse(effectiveConfig, capability, comfyBridgeWorkflow.workflowId) });
+        }
         commitNodes([...nodesRef.current, node]);
         selectNodes(new Set([node.id]));
         if (type !== CanvasNodeType.Text && type !== CanvasNodeType.Script && type !== CanvasNodeType.Audio && type !== CanvasNodeType.Frame && type !== CanvasNodeType.Drawing && type !== PORTRAIT_CLEARANCE_NODE_TYPE) setDialogNodeId(node.id);
-    }, [commitNodes, defaultDrawingEngine, effectiveConfig.comfyBridge.enabled, effectiveConfig.comfyBridge.workflows.length, effectiveConfig.runningHub.enabled, effectiveConfig.runningHub.workflows.length, getCanvasCenter, message, nodesRef, runtimeStatuses, selectNodes, setDialogNodeId, tldrawLicenseKey]);
+    }, [commitNodes, defaultDrawingEngine, effectiveConfig, getCanvasCenter, message, nodesRef, runtimeStatuses, selectNodes, setDialogNodeId, tldrawLicenseKey, updateConfig]);
 
     const createFolder = useCallback((position?: Position, linked?: { id: string; projectId: string; title: string; style: CanvasFolderStyle; theme: CanvasFolderTheme; createdAt: string }) => {
         const folder = createCanvasNode(CanvasNodeType.Frame, position || getCanvasCenter(), {

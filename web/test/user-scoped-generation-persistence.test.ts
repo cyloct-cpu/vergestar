@@ -12,7 +12,7 @@ import { CREATION_CONVERSATIONS_KEY, loadCreationConversations, pendingCreationT
 import { recoverCreationTextTask } from "../src/services/creation-text-task-recovery";
 import { ASSET_STORE_KEY, flushAssetStorePersistence, useAssetStore, type Asset, type NewAsset } from "../src/stores/use-asset-store";
 import { withGenerationAssetStorageLock } from "../src/services/generation-asset-repository";
-import { CANVAS_STORE_KEY, flushCanvasStorePersistence, useCanvasStore, withCanvasStorePersistenceLock, withCanvasStorePersistenceSuppressed, type CanvasProject } from "../src/stores/canvas/use-canvas-store";
+import { CANVAS_STORE_KEY, flushCanvasStorePersistence, updateProjectNodesPreservingGenerationCommits, useCanvasStore, withCanvasStorePersistenceLock, withCanvasStorePersistenceSuppressed, type CanvasProject } from "../src/stores/canvas/use-canvas-store";
 import { CanvasNodeType, type CanvasAssistantSession, type CanvasConnection, type CanvasNodeData } from "../src/types/canvas";
 import { deleteAssetWithRemoteSync, deleteCanvasProjectsWithRemoteSync, installRemoteUserDataAutoSync, resetRemoteUserDataSync, saveRemoteUserDataNow, syncRemoteUserData, withRemoteUserDataSyncExclusive } from "../src/services/user-data-sync";
 import { apiClient } from "../src/services/api/request";
@@ -211,6 +211,203 @@ test("Canvas flush rejects a failed catalog write and retries the retained C1 sn
         expect(useCanvasStore.getState().projects[0]?.title).toBe("C1");
     } finally {
         failWrites = false;
+        await flushCanvasStorePersistence();
+        setActiveUserScope(previousScope);
+        withCanvasStorePersistenceSuppressed(() => {
+            useCanvasStore.setState({ projects: previousProjects });
+        });
+        localforage.getItem = originalGetItem;
+        localforage.setItem = originalSetItem;
+        if (originalWindow === undefined) delete (globalThis as { window?: unknown }).window;
+        else Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });
+    }
+});
+
+test("ordinary Canvas queue keeps a committed new generation node after later edits", async () => {
+    const originalWindow = (globalThis as { window?: unknown }).window;
+    const originalGetItem = localforage.getItem.bind(localforage);
+    const originalSetItem = localforage.setItem.bind(localforage);
+    const previousScope = getActiveUserScope();
+    const previousProjects = useCanvasStore.getState().projects;
+    const durableValues = new Map<string, string>();
+    const localStorageValues = new Map<string, string>();
+    Object.defineProperty(globalThis, "window", {
+        configurable: true,
+        value: {
+            localStorage: {
+                getItem: (key: string) => localStorageValues.get(key) ?? null,
+                setItem: (key: string, value: string) => localStorageValues.set(key, value),
+                removeItem: (key: string) => localStorageValues.delete(key),
+            },
+        },
+    });
+    localforage.getItem = (async (key: string) => durableValues.get(key) ?? null) as typeof localforage.getItem;
+    localforage.setItem = (async (key: string, value: string) => {
+        durableValues.set(key, value);
+        return value;
+    }) as typeof localforage.setItem;
+
+    const scope = "canvas-new-generation-node-retention";
+    const key = `${CANVAS_STORE_KEY}:user:${scope}`;
+    const effectKey = "canvas-effect:new-node-retention";
+    const baseNode: CanvasNodeData = {
+        id: "node-base",
+        type: CanvasNodeType.Text,
+        title: "base",
+        position: { x: 0, y: 0 },
+        width: 320,
+        height: 180,
+        metadata: { content: "base" },
+    };
+    const generatedNode: CanvasNodeData = {
+        id: "node-generated",
+        type: CanvasNodeType.Image,
+        title: "generated",
+        position: { x: 480, y: 0 },
+        width: 320,
+        height: 180,
+        metadata: {
+            content: "opaque://generated",
+            status: "success",
+            generationEffectKeys: [effectKey],
+        },
+    };
+    const project = (nodes: CanvasNodeData[]): CanvasProject => ({
+        id: "canvas-new-generation-node",
+        title: "canvas",
+        createdAt: "2026-08-14T00:00:00.000Z",
+        updatedAt: "2026-08-14T00:00:00.000Z",
+        nodes,
+        connections: [],
+        chatSessions: [],
+        activeChatId: null,
+        backgroundMode: "dots",
+        showImageInfo: false,
+        viewport: { x: 0, y: 0, k: 1 },
+        directorScenes: [],
+    });
+
+    try {
+        setActiveUserScope(scope);
+        useCanvasStore.setState({ projects: [project([baseNode])] });
+        await flushCanvasStorePersistence();
+
+        useCanvasStore.setState((state) => ({
+            projects: state.projects.map((item) => (item.id === project([]).id ? { ...item, title: "edited before generation" } : item)),
+        }));
+        // This models the mounted page submitting a newly created node from its live nodesRef
+        // while the persisted store snapshot still contains only the pre-generation nodes.
+        useCanvasStore.setState({ projects: [project([baseNode])] });
+        await persistCanvasGenerationEffect({
+            projectId: "canvas-new-generation-node",
+            effectKey,
+            previousNodes: [baseNode],
+            nodes: [baseNode, generatedNode],
+        });
+
+        // A later ordinary edit queues another catalog snapshot. The committed generated node
+        // must not be interpreted as a user deletion merely because its stamp first appeared
+        // in the dedicated generation commit.
+        useCanvasStore.setState((state) => ({
+            projects: state.projects.map((item) => (item.id === "canvas-new-generation-node" ? { ...item, title: "edited after generation" } : item)),
+        }));
+        await flushCanvasStorePersistence();
+
+        const persisted = JSON.parse(durableValues.get(key)!) as { state: { projects: CanvasProject[] } };
+        expect(persisted.state.projects[0]?.nodes.some((node) => node.id === generatedNode.id)).toBe(true);
+        expect(persisted.state.projects[0]?.title).toBe("edited after generation");
+    } finally {
+        setActiveUserScope(previousScope);
+        withCanvasStorePersistenceSuppressed(() => {
+            useCanvasStore.setState({ projects: previousProjects });
+        });
+        await flushCanvasStorePersistence();
+        localforage.getItem = originalGetItem;
+        localforage.setItem = originalSetItem;
+        if (originalWindow === undefined) delete (globalThis as { window?: unknown }).window;
+        else Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });
+    }
+});
+
+test("generation status writes keep a committed sibling node from a stale React snapshot", async () => {
+    const originalWindow = (globalThis as { window?: unknown }).window;
+    const originalGetItem = localforage.getItem.bind(localforage);
+    const originalSetItem = localforage.setItem.bind(localforage);
+    const previousScope = getActiveUserScope();
+    const previousProjects = useCanvasStore.getState().projects;
+    const durableValues = new Map<string, string>();
+    Object.defineProperty(globalThis, "window", {
+        configurable: true,
+        value: {
+            localStorage: {
+                getItem: (key: string) => null,
+                setItem: (key: string, value: string) => undefined,
+                removeItem: (key: string) => undefined,
+            },
+        },
+    });
+    localforage.getItem = (async (key: string) => durableValues.get(key) ?? null) as typeof localforage.getItem;
+    localforage.setItem = (async (key: string, value: string) => {
+        durableValues.set(key, value);
+        return value;
+    }) as typeof localforage.setItem;
+
+    const scope = "guest";
+    const projectId = "canvas-stale-sibling-retention";
+    const key = `${CANVAS_STORE_KEY}:user:${scope}`;
+    const effectKey = "canvas-effect:stale-sibling";
+    const node = (id: string, metadata: CanvasNodeData["metadata"] = {}): CanvasNodeData => ({
+        id,
+        type: CanvasNodeType.Image,
+        title: id,
+        position: { x: 0, y: 0 },
+        width: 320,
+        height: 180,
+        metadata,
+    });
+    const project = (nodes: CanvasNodeData[]): CanvasProject => ({
+        id: projectId,
+        title: "canvas",
+        createdAt: "2026-08-14T00:00:00.000Z",
+        updatedAt: "2026-08-14T00:00:00.000Z",
+        nodes,
+        connections: [],
+        chatSessions: [],
+        activeChatId: null,
+        backgroundMode: "dots",
+        showImageInfo: false,
+        viewport: { x: 0, y: 0, k: 1 },
+        directorScenes: [],
+    });
+
+    try {
+        setActiveUserScope(scope);
+        const baseNode = node("node-base", { content: "base" });
+        const generatedNode = node("node-generated", { content: "opaque://generated", status: "success", generationEffectKeys: [effectKey] });
+        useCanvasStore.setState({ projects: [project([baseNode])] });
+        await flushCanvasStorePersistence();
+
+        await persistCanvasGenerationEffect({
+            projectId,
+            effectKey,
+            previousNodes: [baseNode],
+            nodes: [baseNode, generatedNode],
+        });
+
+        // 模拟 React 状态尚未包含同一批另一个已完成任务的节点，但后续失败回写已经进入 setNodes。
+        withCanvasStorePersistenceSuppressed(() => {
+            useCanvasStore.setState({ projects: [project([baseNode])] });
+        });
+        updateProjectNodesPreservingGenerationCommits(scope, projectId, [node("node-base", { content: "base", status: "success" })]);
+
+        const live = useCanvasStore.getState().projects.find((candidate) => candidate.id === projectId)!;
+        expect(live.nodes.find((candidate) => candidate.id === generatedNode.id)).toBeDefined();
+        expect(live.nodes.find((candidate) => candidate.id === baseNode.id)?.metadata?.status).toBe("success");
+
+        await flushCanvasStorePersistence();
+        const durable = JSON.parse(durableValues.get(key)!) as { state: { projects: CanvasProject[] } };
+        expect(durable.state.projects[0]?.nodes.find((candidate) => candidate.id === generatedNode.id)).toBeDefined();
+    } finally {
         await flushCanvasStorePersistence();
         setActiveUserScope(previousScope);
         withCanvasStorePersistenceSuppressed(() => {
@@ -4235,6 +4432,94 @@ test("login replaces stale local entities instead of resurrecting remote deletio
     } finally {
         resetRemoteUserDataSync();
         useCanvasStore.setState({ projects: previousProjects });
+        localforage.getItem = originalGetItem;
+        localforage.setItem = originalSetItem;
+        apiClient.defaults.adapter = previousAdapter;
+        if (originalWindow === undefined) delete (globalThis as { window?: unknown }).window;
+        else Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });
+    }
+});
+
+test("remote hydration preserves local generation nodes that have not reached the server", async () => {
+    const originalWindow = (globalThis as { window?: unknown }).window;
+    const originalGetItem = localforage.getItem.bind(localforage);
+    const originalSetItem = localforage.setItem.bind(localforage);
+    const previousAdapter = apiClient.defaults.adapter;
+    const previousProjects = useCanvasStore.getState().projects;
+
+    const remoteProject = storedCanvasProject("canvas-hydration-remote", "远端画布");
+    remoteProject.nodes = [
+        {
+            id: "node-remote",
+            type: CanvasNodeType.Image,
+            title: "远端节点",
+            position: { x: 0, y: 0 },
+            width: 320,
+            height: 180,
+            metadata: { content: "opaque://remote", status: "success" },
+        },
+    ];
+    const localProject = storedCanvasProject(remoteProject.id, "本地画布");
+    localProject.nodes = [
+        {
+            id: "node-local-generation",
+            type: CanvasNodeType.Image,
+            title: "新生成节点",
+            position: { x: 420, y: 0 },
+            width: 320,
+            height: 180,
+            metadata: {
+                content: "opaque://generated",
+                status: "success",
+                taskId: "task-local-generation",
+                generationEffectKeys: ["effect-local-generation"],
+            },
+        },
+    ];
+    const localPendingProject = storedCanvasProject("canvas-hydration-local-pending", "正在生成");
+    localPendingProject.nodes = [
+        {
+            id: "node-local-pending",
+            type: CanvasNodeType.Image,
+            title: "生成中",
+            position: { x: 0, y: 260 },
+            width: 320,
+            height: 180,
+            metadata: { status: "loading", taskId: "task-local-pending" },
+        },
+    ];
+
+    apiClient.defaults.adapter = async (config) => {
+        const data = String(config.url || "").includes("user-data/snapshot") ? { projects: [remoteProject], assets: [] } : { projects: [] };
+        return { data: { code: 0, data, msg: "" }, status: 200, statusText: "OK", headers: {}, config };
+    };
+    Object.defineProperty(globalThis, "window", {
+        configurable: true,
+        value: {
+            setTimeout: () => 1,
+            clearTimeout: () => undefined,
+            localStorage: { getItem: () => null, setItem: () => undefined, removeItem: () => undefined },
+        },
+    });
+    localforage.getItem = (async () => null) as typeof localforage.getItem;
+    localforage.setItem = (async (_key: string, value: string) => value) as typeof localforage.setItem;
+
+    try {
+        resetRemoteUserDataSync();
+        useCanvasStore.setState({ projects: [localProject, localPendingProject] });
+        await syncRemoteUserData("account-generation-hydration");
+
+        const projects = useCanvasStore.getState().projects;
+        const hydratedRemote = projects.find((item) => item.id === remoteProject.id);
+        expect(hydratedRemote?.nodes.find((item) => item.id === "node-remote")).toBeTruthy();
+        expect(hydratedRemote?.nodes.find((item) => item.id === "node-local-generation")).toBeTruthy();
+        expect(projects.some((item) => item.id === localPendingProject.id)).toBe(true);
+
+        await saveRemoteUserDataNow();
+    } finally {
+        resetRemoteUserDataSync();
+        useCanvasStore.setState({ projects: previousProjects });
+        await flushCanvasStorePersistence();
         localforage.getItem = originalGetItem;
         localforage.setItem = originalSetItem;
         apiClient.defaults.adapter = previousAdapter;

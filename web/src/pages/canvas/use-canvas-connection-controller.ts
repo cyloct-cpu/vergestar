@@ -11,7 +11,8 @@ import { attachNodeToStoryboardRow, createCanvasNode, getConnectionTargetAnchor,
 import { createCanvasDrawingFromImage } from "@/lib/canvas/canvas-drawing-storage";
 import { isDrawingEngineAvailable, type CanvasDrawingEngine } from "@/lib/canvas/canvas-drawing-engine";
 import { isFrameNode, isNodeHiddenByCollapsedFrame } from "@/lib/canvas/canvas-frame";
-import { normalizeRunningHubCapability, type AiConfig } from "@/stores/use-config-store";
+import { selectComfyBridgeWorkflowForCapability, trackComfyBridgeWorkflowUse } from "@/lib/comfy-bridge-workflows";
+import { normalizeRunningHubCapability, useConfigStore, type AiConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type CanvasNodeMetadata, type ConnectionHandle, type ContextMenuState, type Position, type ViewportTransform } from "@/types/canvas";
 import { workflowProviderPluginEnabled } from "@/lib/plugins/builtin/workflows";
@@ -59,9 +60,14 @@ function selectRunningHubWorkflow(config: AiConfig) {
 }
 
 function selectComfyBridgeWorkflow(config: AiConfig) {
-    return config.comfyBridge.workflows.find((item) => item.workflowId.trim() === config.comfyBridge.workflowId.trim())
-        || config.comfyBridge.workflows.find((item) => item.capability === config.comfyBridge.capability)
-        || config.comfyBridge.workflows[0];
+    const workflow = selectComfyBridgeWorkflowForCapability(config, normalizeRunningHubCapability(config.comfyBridge.capability));
+    if (workflow) return workflow;
+    return config.comfyBridge.workflows[0];
+}
+
+function selectBridgeWorkflowForMediaNode(config: AiConfig, type: CanvasNodeType.Image | CanvasNodeType.Video | CanvasNodeType.Audio) {
+    const capability = type === CanvasNodeType.Video ? "video" as const : type === CanvasNodeType.Audio ? "audio" as const : "image" as const;
+    return selectComfyBridgeWorkflowForCapability(config, capability);
 }
 
 export function useCanvasConnectionController({
@@ -84,6 +90,7 @@ export function useCanvasConnectionController({
     const { message } = App.useApp();
     const tldrawLicenseKey = useUserStore((state) => state.drawingEngine.tldrawLicenseKey);
     const runtimeStatuses = usePluginStore((state) => state.runtimeStatuses);
+    const updateGlobalConfig = useConfigStore((state) => state.updateConfig);
     const [connectingParams, setConnectingParams] = useState<ConnectionHandle | null>(null);
     const [connectionTargetNodeId, setConnectionTargetNodeId] = useState<string | null>(null);
     const [connectionTargetAnchorRatio, setConnectionTargetAnchorRatio] = useState<number | undefined>();
@@ -228,11 +235,23 @@ export function useCanvasConnectionController({
             setConnecting(null);
             return;
         }
+        const bridgeMedia = nodeType === CanvasNodeType.Image || nodeType === CanvasNodeType.Video || nodeType === CanvasNodeType.Audio;
+        const bridgeMediaReady = bridgeMedia
+            && workflowProviderPluginEnabled(runtimeStatuses, "comfyui")
+            && config.comfyBridge.enabled
+            && Boolean(config.comfyBridge.bridgeId.trim());
         const runningHubWorkflow = selectedWorkflowProvider === "runninghub" ? selectRunningHubWorkflow(config) : undefined;
-        const comfyBridgeWorkflow = selectedWorkflowProvider === "comfyui" ? selectComfyBridgeWorkflow(config) : undefined;
+        const comfyBridgeWorkflow = selectedWorkflowProvider === "comfyui"
+            ? selectComfyBridgeWorkflow(config)
+            : bridgeMediaReady
+                ? selectBridgeWorkflowForMediaNode(config, nodeType as CanvasNodeType.Image | CanvasNodeType.Video | CanvasNodeType.Audio)
+                : undefined;
+        if (bridgeMediaReady && !comfyBridgeWorkflow) {
+            message.warning(`当前 Bridge 没有${nodeType === CanvasNodeType.Video ? "视频" : nodeType === CanvasNodeType.Audio ? "音频" : "图片"}用途的工作流，将使用普通模型生成`);
+        }
         const workflowCapability = selectedWorkflowProvider === "runninghub"
             ? normalizeRunningHubCapability(runningHubWorkflow?.capability, normalizeRunningHubCapability(config.runningHub.capability))
-            : comfyBridgeWorkflow?.capability || "image";
+            : normalizeRunningHubCapability(comfyBridgeWorkflow?.capabilities?.[0] || comfyBridgeWorkflow?.capability, "image");
         const metadata: CanvasNodeMetadata | undefined = nodeType === CanvasNodeType.Config
             ? {
                 generationMode: selectedWorkflowProvider ? workflowCapability === "video" ? "video" as const : workflowCapability === "audio" ? "audio" as const : "image" as const : "image" as const,
@@ -248,6 +267,14 @@ export function useCanvasConnectionController({
               }
             : nodeType === CanvasNodeType.Drawing
             ? { drawingEngine: defaultDrawingEngine }
+            : bridgeMedia && comfyBridgeWorkflow
+            ? {
+                generationMode: nodeType === CanvasNodeType.Video ? "video" as const : nodeType === CanvasNodeType.Audio ? "audio" as const : "image" as const,
+                workflowProvider: "comfyui",
+                comfyBridgeWorkflowId: comfyBridgeWorkflow.workflowId,
+                workflowTitle: comfyBridgeWorkflow.title?.trim() || comfyBridgeWorkflow.workflowId,
+                status: NODE_STATUS_IDLE,
+            }
             : nodeType === CanvasNodeType.Script && scriptPrompt
               ? { prompt: scriptPrompt, composerContent: scriptPrompt }
             : nodeType === CanvasNodeType.Video && storyboardRow
@@ -268,6 +295,9 @@ export function useCanvasConnectionController({
               : connectedNodeCenterFromEdgeDrop(pending.position, spec, pending.connection.handleType);
         const newNode = createCanvasNode(nodeType, position, metadata);
         if (nodeType === CanvasNodeType.Config && selectedWorkflowProvider) newNode.title = selectedWorkflowProvider === "runninghub" ? "RunningHub 工作流" : "ComfyUI Bridge";
+        if (bridgeMedia && comfyBridgeWorkflow) {
+            updateGlobalConfig("comfyBridge", { ...config.comfyBridge, lastUsedWorkflows: trackComfyBridgeWorkflowUse(config, nodeType === CanvasNodeType.Video ? "video" : nodeType === CanvasNodeType.Audio ? "audio" : "image", comfyBridgeWorkflow.workflowId) });
+        }
         if (storyboardRow) newNode.title = `镜头 ${storyboardRow.shotNumber} · 视频`;
         if (batchSourceNodeIds.length && nodeType === CanvasNodeType.Drawing) {
             message.error("批量连接暂不支持创建绘图，请先连接到普通节点");
@@ -363,7 +393,7 @@ export function useCanvasConnectionController({
         else if (nodeType !== CanvasNodeType.Text && nodeType !== CanvasNodeType.Script && nodeType !== CanvasNodeType.Audio) setDialogNodeId(newNode.id);
         closeConnectionCreateMenu();
         setConnecting(null);
-    }, [closeConnectionCreateMenu, config, connectionsRef, defaultDrawingEngine, message, nodesRef, projectId, runtimeStatuses, setConnecting, setConnections, setDialogNodeId, setDrawingNodeId, setNodes, setSelectedConnectionId, setSelectedNodeIds, tldrawLicenseKey]);
+    }, [closeConnectionCreateMenu, config, connectionsRef, defaultDrawingEngine, message, nodesRef, projectId, runtimeStatuses, setConnecting, setConnections, setDialogNodeId, setDrawingNodeId, setNodes, setSelectedConnectionId, setSelectedNodeIds, tldrawLicenseKey, updateGlobalConfig]);
 
     const getConnectionCreateDisabledReason = useCallback((type: CanvasNodeType.Image | CanvasNodeType.Text | CanvasNodeType.Script | CanvasNodeType.Video | CanvasNodeType.Audio | CanvasNodeType.Drawing | CanvasNodeType.Config, pending: PendingConnectionCreate, workflowProvider?: "runninghub" | "comfyui") => {
         const nodeType = type;

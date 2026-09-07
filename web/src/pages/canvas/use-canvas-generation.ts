@@ -38,6 +38,19 @@ export function subscribeCanvasGenerationRecoveryTasks(ids: readonly string[], l
     return subscribe(Array.from(new Set(ids)), listener);
 }
 
+export async function recoverCanvasGenerationTaskById(
+    input: Omit<Parameters<typeof recoverCanvasGenerationTaskNode>[0], "completed" | "node"> & {
+        node: CanvasNodeData;
+        taskId: string;
+    },
+) {
+    const task = await queryGenerationTask(input.taskId);
+    await recoverCanvasGenerationTaskNode({
+        ...input,
+        completed: task,
+    });
+}
+
 export type CanvasGenerationRecoveryContext = {
     projectId: string;
     controller: AbortController;
@@ -338,9 +351,11 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
         (taskId: string, signal: AbortSignal, onUpdate?: (task: GenerationTask) => void) =>
             new Promise<GenerationTask>((resolve, reject) => {
                 let unsubscribe: (() => void) | undefined;
+                let timeout: ReturnType<typeof setTimeout> | undefined;
                 let settled = false;
                 const cleanup = () => {
                     signal.removeEventListener("abort", onAbort);
+                    if (timeout) clearTimeout(timeout);
                     unsubscribe?.();
                 };
                 const onAbort = () => {
@@ -348,6 +363,12 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
                     settled = true;
                     cleanup();
                     reject(new DOMException("Aborted", "AbortError"));
+                };
+                const onObservationTimeout = () => {
+                    if (settled) return;
+                    settled = true;
+                    cleanup();
+                    reject(new Error("任务状态订阅没有返回结果"));
                 };
                 const onTask = (task: GenerationTask) => {
                     if (settled) return;
@@ -360,6 +381,7 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
                 if (signal.aborted) return onAbort();
                 signal.addEventListener("abort", onAbort, { once: true });
                 unsubscribe = subscribeCanvasGenerationRecoveryTasks([taskId], onTask);
+                timeout = setTimeout(onObservationTimeout, 5000);
                 if (settled) unsubscribe();
             }),
         [],
@@ -416,6 +438,20 @@ export function useCanvasGeneration({ projectId, domainProjectId, projectLoaded,
                         });
                     } catch (error) {
                         if (!isCurrentProject() || (error instanceof Error && error.name === "AbortError")) return;
+                        if (error instanceof Error && error.message === "任务状态订阅没有返回结果" && !continuationOnly) {
+                            await recoverCanvasGenerationTaskById({
+                                projectId: startedProjectId,
+                                node,
+                                taskId,
+                                continuationOnly,
+                                nodesRef,
+                                setNodes,
+                                applyGenerationTaskResult,
+                                signal,
+                                isCurrentProject,
+                            });
+                            return;
+                        }
                         const failure = generationFailureMetadata(error, node.metadata?.composerContent || node.metadata?.prompt || "");
                         setNodes((current) =>
                             isCurrentProject()

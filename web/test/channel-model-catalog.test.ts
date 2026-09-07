@@ -110,7 +110,7 @@ describe("public channel model catalog", () => {
         expect(result.catalog.find((item) => item.id === "omni")).not.toHaveProperty("compatibilityMap");
     });
 
-    test("maps Omni metadata to friendly video/NewAPI configuration with 8/10 seconds and both ratios", () => {
+    test("maps Omni metadata to a friendly video/NewAPI duration range and both ratios", () => {
         const config = configForCatalog([omniCatalog]);
         const model = "flow::omni";
         const cost = config.channels[0]!.modelCosts![0]!;
@@ -120,7 +120,7 @@ describe("public channel model catalog", () => {
         expect(selectableModelsByCapability(config, "text")).toEqual([]);
         expect(resolveModelRequestConfig(config, model).interfaceType).toBe("newapi");
         expect(cost.capabilityConfig?.video).toMatchObject({
-            duration: { selection: "enum", values: [8, 10], default: 10 },
+            duration: { selection: "range", min: 8, max: 10, step: 1, default: 10 },
             ratios: ["16:9", "9:16"],
             defaultRatio: "16:9",
             resolutions: [],
@@ -405,7 +405,8 @@ describe("public channel model catalog", () => {
         await createVideoGenerationTask(config, "synthetic prompt");
 
         expect(html).toContain("768P竖 · 16:9 · 8s");
-        expect(panelHtml).toMatch(/aria-pressed="true"[^>]*>768P竖<\/button>/);
+        expect(panelHtml).toMatch(/<button[^>]*aria-pressed="true"[^>]*><span[^>]*>768P竖<\/span><\/button>/);
+        expect(panelHtml).toMatch(/<input[^>]*type="range"[^>]*aria-label="视频时长（秒）"/);
         expect(body.resolution_name).toBe("768p竖");
     });
 });

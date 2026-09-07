@@ -396,7 +396,7 @@ func (s *Service) runComfyBridgeWorkflow(ctx context.Context, input canvasGenera
 		},
 		"metadata": input.Metadata,
 	}
-	request, err := s.enqueueComfyBridgeRequest(ctx, metadata.UserID, input.Config.BridgeID, metadata.TaskID, resumedProviderRequestID(ctx), payload)
+	request, err := s.enqueueComfyBridgeRequest(ctx, metadata.UserID, input.Config.BridgeID, metadata.TaskID, resumedProviderRequestID(ctx), ComfyBridgeRequestKindGenerate, payload)
 	if err != nil {
 		return nil, err
 	}
@@ -979,6 +979,11 @@ func resolveWorkflowFieldValue(field WorkflowField, files map[string]string, inp
 				value := workflowVideoResolutionValue(field, input.Config.VQuality)
 				return value, strings.TrimSpace(fmt.Sprint(value)) != "", nil
 			}
+			if isComfyBridgeInterface(input.Config.InterfaceType) {
+				if megapixels := workflowImageShortEdgeMegapixels(input.Config.Size, input.Config.VQuality); megapixels != nil {
+					return *megapixels, true, nil
+				}
+			}
 			return input.Config.Size, strings.TrimSpace(input.Config.Size) != "", nil
 		case "aspectratio", "ratio", "imageaspectratio", "imageratio", "videoaspectratio", "videoratio":
 			value := workflowAspectRatioValue(field, input.Config.Size)
@@ -997,6 +1002,11 @@ func resolveWorkflowFieldValue(field WorkflowField, files map[string]string, inp
 			value := workflowVideoDurationValue(field, input.Config.VideoSeconds)
 			return value, strings.TrimSpace(fmt.Sprint(value)) != "", nil
 		case "vquality", "videoquality", "video_quality":
+			if isComfyBridgeInterface(input.Config.InterfaceType) && strings.EqualFold(strings.TrimSpace(input.Mode), "image") {
+				if megapixels := workflowImageShortEdgeMegapixels(input.Config.Size, input.Config.VQuality); megapixels != nil {
+					return *megapixels, true, nil
+				}
+			}
 			value := workflowVideoResolutionValue(field, input.Config.VQuality)
 			return value, strings.TrimSpace(fmt.Sprint(value)) != "", nil
 		case "videogenerateaudio", "video_generate_audio", "generateaudio":
@@ -1333,6 +1343,34 @@ func workflowVideoResolutionPixels(value string) int {
 		return 0
 	}
 	return parsed
+}
+
+func workflowImageShortEdgeMegapixels(size string, tier string) *float64 {
+	shortEdge := 0
+	switch strings.ToLower(strings.TrimSpace(tier)) {
+	case "1k":
+		shortEdge = 1024
+	case "2k":
+		shortEdge = 2048
+	case "4k":
+		shortEdge = 4096
+	default:
+		return nil
+	}
+	ratio := workflowAspectRatio(size)
+	widthRatio, heightRatio, ok := workflowRatioParts(ratio)
+	if !ok {
+		return nil
+	}
+	longEdge := float64(shortEdge)
+	if widthRatio > heightRatio {
+		longEdge = float64(shortEdge) * float64(widthRatio) / float64(heightRatio)
+	} else if widthRatio < heightRatio {
+		longEdge = float64(shortEdge) * float64(heightRatio) / float64(widthRatio)
+	}
+	value := float64(shortEdge) * longEdge / 1048576
+	value = math.Round(value*10) / 10
+	return &value
 }
 
 func workflowVideoResolutionValue(field WorkflowField, value string) interface{} {

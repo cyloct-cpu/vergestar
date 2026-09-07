@@ -36,6 +36,20 @@ func TestTaskInputUsesWorkflowProvider(t *testing.T) {
 	}
 }
 
+func TestTaskInputUsesCustomChannelWithGatewayAPIPath(t *testing.T) {
+	input := map[string]any{
+		"config": map[string]any{
+			"baseUrl":       "https://metaso.cn/api/minimax",
+			"apiKey":        "custom-key",
+			"model":         "MiniMax-H3",
+			"interfaceType": "minimax-video",
+		},
+	}
+	if !taskInputUsesCustomChannel(input) {
+		t.Fatal("custom gateway base URL must not be classified as a system proxy")
+	}
+}
+
 func TestResolveTaskModelSelectionAllowsExplicitSystemChannelWhenFrontendModelsEnabled(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:"+newID()+"?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {

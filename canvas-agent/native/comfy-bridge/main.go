@@ -16,21 +16,27 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 type jsonMap map[string]any
 
 type bridgeOptions struct {
-	Server      string `json:"server"`
-	Token       string `json:"token"`
-	Comfy       string `json:"comfy"`
-	WorkflowDir string `json:"workflowDir"`
-	PollSeconds int    `json:"pollSeconds"`
+	Server           string `json:"server"`
+	Token            string `json:"token"`
+	Comfy            string `json:"comfy"`
+	ComfyExplicit    bool   `json:"comfyExplicit,omitempty"`
+	WorkflowDir      string `json:"workflowDir"`
+	ComfyInstallDir  string `json:"comfyInstallDir,omitempty"`
+	ComfyInstallType string `json:"comfyInstallType,omitempty"`
+	ComfyPort        int    `json:"comfyPort,omitempty"`
+	PollSeconds      int    `json:"pollSeconds"`
 }
 
 type bridgeRequest struct {
 	ID       string  `json:"id"`
+	Kind     string  `json:"kind,omitempty"`
 	TaskID   string  `json:"taskId"`
 	BridgeID string  `json:"bridgeId"`
 	Payload  jsonMap `json:"payload"`
@@ -39,15 +45,23 @@ type bridgeRequest struct {
 var bridgeHTTP = &http.Client{Timeout: 70 * time.Second}
 var comfyHTTP = &http.Client{Timeout: 10 * time.Minute}
 
+const ComfyBridgeRequestKindComfyControl = "comfy.control"
+const ComfyBridgeRequestKindDirectoryPicker = "directory.picker"
+
+var runtimeOptionsMutex sync.RWMutex
+var runtimeOptions bridgeOptions
+var heartbeatSignal = make(chan struct{}, 1)
+
 func main() {
 	options, err := parseOptions(os.Args[1:])
 	if err != nil {
 		fatal(err)
 	}
+	setRuntimeOptions(options)
 	fmt.Printf("ComfyUI Bridge connecting to %s\n", options.Server)
-	go heartbeatLoop(options)
+	go heartbeatLoop()
 	for {
-		request, err := pollRequest(options)
+		request, err := pollRequest(currentBridgeOptions())
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ComfyUI Bridge: %v\n", err)
 			time.Sleep(2500 * time.Millisecond)
@@ -87,9 +101,21 @@ func parseOptions(args []string) (bridgeOptions, error) {
 	}
 	if raw := value("--comfy"); raw != "" {
 		options.Comfy = strings.TrimRight(raw, "/")
+		options.ComfyExplicit = true
 	}
 	if raw := value("--workflow-dir"); raw != "" {
 		options.WorkflowDir = raw
+	}
+	if raw := value("--comfy-install-dir"); raw != "" {
+		options.ComfyInstallDir = raw
+	}
+	if raw := value("--comfy-install-type"); raw != "" {
+		options.ComfyInstallType = raw
+	}
+	if raw := value("--comfy-port"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil {
+			options.ComfyPort = parsed
+		}
 	}
 	if raw := value("--poll-seconds"); raw != "" {
 		if parsed, err := strconv.Atoi(raw); err == nil {
@@ -202,7 +228,15 @@ func pollRequest(options bridgeOptions) (*bridgeRequest, error) {
 
 func executeRequest(options bridgeOptions, request bridgeRequest) {
 	completion := jsonMap{"requestId": request.ID, "status": "succeeded"}
-	result, err := runComfyRequest(options, request.Payload)
+	var result jsonMap
+	var err error
+	if request.Kind == ComfyBridgeRequestKindComfyControl {
+		result, err = runComfyControl(options, request.Payload)
+	} else if request.Kind == ComfyBridgeRequestKindDirectoryPicker {
+		result, err = runDirectoryPicker(options, request.Payload)
+	} else {
+		result, err = runComfyRequest(options, request.Payload)
+	}
 	if err != nil {
 		completion["status"] = "failed"
 		completion["error"] = err.Error()
@@ -212,6 +246,119 @@ func executeRequest(options bridgeOptions, request bridgeRequest) {
 	if err := submitResultWithRetry(options, completion); err != nil {
 		fmt.Fprintf(os.Stderr, "ComfyUI Bridge 结果回传失败（请求 %s）：%v\n", request.ID, err)
 	}
+}
+
+func currentBridgeOptions() bridgeOptions {
+	runtimeOptionsMutex.RLock()
+	defer runtimeOptionsMutex.RUnlock()
+	return runtimeOptions
+}
+
+func setRuntimeOptions(options bridgeOptions) {
+	runtimeOptionsMutex.Lock()
+	defer runtimeOptionsMutex.Unlock()
+	runtimeOptions = options
+}
+
+func requestHeartbeat() {
+	select {
+	case heartbeatSignal <- struct{}{}:
+	default:
+	}
+}
+
+func publishHeartbeat(options bridgeOptions) {
+	capabilities, err := bridgeCapabilities(options)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ComfyUI Bridge 能力扫描失败：%v\n", err)
+		return
+	}
+	if err := requestBridgeJSON(options, http.MethodPost, options.Server+"/api/comfy-bridge/heartbeat", jsonMap{"capabilities": capabilities}, nil); err != nil {
+		fmt.Fprintf(os.Stderr, "ComfyUI Bridge 心跳失败：%v\n", err)
+	}
+}
+
+func runDirectoryPicker(options bridgeOptions, payload jsonMap) (jsonMap, error) {
+	_ = options
+	title := strings.TrimSpace(stringValue(payload["title"]))
+	path, cancelled, err := pickDirectory(title)
+	if err != nil {
+		return nil, err
+	}
+	if cancelled {
+		return jsonMap{"cancelled": true, "path": ""}, nil
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		absolute = path
+	}
+	return jsonMap{"cancelled": false, "path": absolute}, nil
+}
+
+func runComfyControl(options bridgeOptions, payload jsonMap) (jsonMap, error) {
+	action := strings.ToLower(stringValue(payload["action"]))
+	options = applyComfyControlOptions(options, payload)
+	setRuntimeOptions(options)
+	switch action {
+	case "start":
+		result, err := startComfy(options)
+		if err == nil {
+			if raw := stringValue(result["comfyUrl"]); raw != "" && raw != options.Comfy {
+				options.Comfy = strings.TrimRight(raw, "/")
+				options.ComfyExplicit = true
+				if err := saveBridgeOptions(options); err != nil {
+					fmt.Fprintf(os.Stderr, "ComfyUI Bridge 保存控制设置失败：%v\n", err)
+				}
+			}
+			setRuntimeOptions(options)
+		}
+		publishHeartbeat(currentBridgeOptions())
+		return result, err
+	case "stop":
+		result, err := stopComfy(options)
+		publishHeartbeat(currentBridgeOptions())
+		return result, err
+	case "detect":
+		result, err := detectComfy(options)
+		publishHeartbeat(currentBridgeOptions())
+		return result, err
+	default:
+		return nil, fmt.Errorf("不支持的 ComfyUI 控制动作：%s", action)
+	}
+}
+
+func applyComfyControlOptions(options bridgeOptions, payload jsonMap) bridgeOptions {
+	changed := false
+	if raw := stringValue(payload["comfyUrl"]); raw != "" && raw != options.Comfy {
+		if err := validateHTTPURL(raw, "--comfy"); err == nil {
+			options.Comfy = strings.TrimRight(raw, "/")
+			options.ComfyExplicit = true
+			changed = true
+		}
+	}
+	if raw := stringValue(payload["installDir"]); raw != options.ComfyInstallDir {
+		options.ComfyInstallDir = raw
+		changed = true
+	}
+	if raw := stringValue(payload["installType"]); raw != options.ComfyInstallType {
+		options.ComfyInstallType = raw
+		changed = true
+	}
+	if raw := int(numberValue(payload["port"])); raw > 0 && raw != options.ComfyPort {
+		options.ComfyPort = raw
+		changed = true
+	}
+	if raw := stringValue(payload["workflowDir"]); raw != options.WorkflowDir {
+		options.WorkflowDir = raw
+		changed = true
+	}
+	if !changed {
+		return options
+	}
+	if err := saveBridgeOptions(options); err != nil {
+		fmt.Fprintf(os.Stderr, "ComfyUI Bridge 保存控制设置失败：%v\n", err)
+	}
+	return options
 }
 
 func runComfyRequest(options bridgeOptions, payload jsonMap) (jsonMap, error) {
@@ -251,22 +398,17 @@ func runComfyRequest(options bridgeOptions, payload jsonMap) (jsonMap, error) {
 	return collectResult(options.Comfy, mode, history)
 }
 
-func heartbeatLoop(options bridgeOptions) {
-	heartbeat := func() {
-		capabilities, err := bridgeCapabilities(options)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "ComfyUI Bridge 能力扫描失败：%v\n", err)
-			return
-		}
-		if err := requestBridgeJSON(options, http.MethodPost, options.Server+"/api/comfy-bridge/heartbeat", jsonMap{"capabilities": capabilities}, nil); err != nil {
-			fmt.Fprintf(os.Stderr, "ComfyUI Bridge 心跳失败：%v\n", err)
-		}
-	}
-	heartbeat()
+func heartbeatLoop() {
+	publishHeartbeat(currentBridgeOptions())
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
-	for range ticker.C {
-		heartbeat()
+	for {
+		select {
+		case <-ticker.C:
+			publishHeartbeat(currentBridgeOptions())
+		case <-heartbeatSignal:
+			publishHeartbeat(currentBridgeOptions())
+		}
 	}
 }
 
@@ -275,11 +417,18 @@ func bridgeCapabilities(options bridgeOptions) (jsonMap, error) {
 	if err != nil {
 		return nil, err
 	}
+	install := detectComfyInstall(options)
+	url, port := detectComfyURL(options)
 	return jsonMap{
-		"comfyUrl":    options.Comfy,
-		"workflowDir": workflowRoot(options),
-		"comfyOnline": checkComfyUI(options.Comfy),
-		"workflows":   workflows,
+		"comfyUrl":         url,
+		"comfyPort":        port,
+		"workflowDir":      workflowRoot(options),
+		"comfyOnline":      checkComfyUI(url),
+		"comfyInstallDir":  install.InstallDir,
+		"comfyInstallType": install.InstallType,
+		"comfyLauncher":    install.Launcher,
+		"comfyManaged":     managedComfyAlive(),
+		"workflows":        workflows,
 	}, nil
 }
 
@@ -310,6 +459,7 @@ func listWorkflowFiles(options bridgeOptions) ([]jsonMap, error) {
 		item := jsonMap{"workflowId": workflowID, "title": strings.TrimSuffix(workflowID, filepath.Ext(workflowID)), "fields": []any{}, "format": "ui"}
 		if workflow, err := readWorkflowFile(filePath); err == nil {
 			item["fields"] = discoverWorkflowFields(workflow, "")
+			item["capabilities"] = inferWorkflowCapabilities(workflow)
 			if graph := discoverWorkflowGraph(workflow); len(graph) > 0 {
 				item["workflowGraph"] = graph
 			}
@@ -354,7 +504,7 @@ func isComfyAPIWorkflow(workflow jsonMap) bool {
 
 func loadWorkflow(options bridgeOptions, payload jsonMap) (jsonMap, error) {
 	if raw, ok := mapValue(payload["workflowJson"]); ok && len(raw) > 0 {
-		return cloneMap(unwrapWorkflow(raw))
+		return executableWorkflow(unwrapWorkflow(raw))
 	}
 	workflowID := strings.TrimSpace(stringValue(payload["workflowId"]))
 	if workflowID == "" {
@@ -385,7 +535,23 @@ func loadWorkflow(options bridgeOptions, payload jsonMap) (jsonMap, error) {
 	if err != nil || realRelative == "." || realRelative == ".." || strings.HasPrefix(realRelative, ".."+string(filepath.Separator)) || filepath.IsAbs(realRelative) {
 		return nil, errors.New("workflowId 不能指向 workflows 目录之外")
 	}
-	return readWorkflowFile(realFile)
+	workflow, err := readWorkflowFile(realFile)
+	if err != nil {
+		return nil, err
+	}
+	return executableWorkflow(workflow)
+}
+
+// executableWorkflow 把 UI 画布 JSON 统一转成可提交的 API JSON。
+// 历史请求可能只带 workflowId，列表时转换过的 JSON 不会跟着请求一起到达。
+func executableWorkflow(workflow jsonMap) (jsonMap, error) {
+	if isComfyAPIWorkflow(workflow) {
+		return workflow, nil
+	}
+	if converted := convertComfyCanvasWorkflow(workflow); len(converted) > 0 {
+		return converted, nil
+	}
+	return workflow, nil
 }
 
 func readWorkflowFile(filePath string) (jsonMap, error) {
@@ -638,6 +804,10 @@ func numberValue(value any) float64 {
 	switch item := value.(type) {
 	case float64:
 		return item
+	case int:
+		return float64(item)
+	case int64:
+		return float64(item)
 	case json.Number:
 		result, _ := item.Float64()
 		return result

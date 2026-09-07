@@ -1,7 +1,8 @@
 import { maxModelInputCapacity, type ModelInputSummary } from "@/lib/model-selection";
 import { getNodeGenerationMode, getNodeInputKind } from "@/lib/canvas/node-registry";
+import { resolveCanvasWorkflowProvider } from "@/lib/canvas/canvas-workflow";
 import type { AiConfig } from "@/stores/use-config-store";
-import { type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
+import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
 
 type ConnectionCandidate = Pick<CanvasConnection, "fromNodeId" | "toNodeId">;
 type CanvasConnectionPolicyOptions = {
@@ -12,6 +13,11 @@ type CanvasConnectionPolicyOptions = {
 export function canvasConnectionError(config: AiConfig, nodes: CanvasNodeData[], connections: CanvasConnection[], candidate: ConnectionCandidate, options: CanvasConnectionPolicyOptions = {}) {
     const target = nodes.find((node) => node.id === candidate.toNodeId);
     if (!target) return "找不到连线目标节点";
+    const isBridgeMediaTarget = (target.type === CanvasNodeType.Image || target.type === CanvasNodeType.Video || target.type === CanvasNodeType.Audio)
+        && resolveCanvasWorkflowProvider(target.metadata) === "comfyui"
+        && Boolean(target.metadata?.comfyBridgeWorkflowId?.trim());
+    // Bridge 工作流自带输入槽位和能力，不按普通模型的参考素材容量拦截。
+    if (isBridgeMediaTarget) return "";
     const mode = getNodeGenerationMode(target);
     if (!mode) return "";
     const input = connectionInputSummary(target.id, nodes, connections, candidate);

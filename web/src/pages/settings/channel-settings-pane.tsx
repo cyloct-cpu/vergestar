@@ -34,7 +34,7 @@ export function ChannelSettingsPane({ onOpenModels, onOpenRunningHub, onOpenComf
     const config = useConfigStore((state) => state.config);
     const replaceConfig = useConfigStore((state) => state.replaceConfig);
     const [loadingChannelIds, setLoadingChannelIds] = useState<string[]>([]);
-    const [collapsedChannelIds, setCollapsedChannelIds] = useState<Set<string>>(new Set());
+    const [expandedChannelIds, setExpandedChannelIds] = useState<Set<string>>(new Set());
     const [providerCatalog, setProviderCatalog] = useState<ModelProtocolDefinition[]>([]);
     const desktopLocalChannelsEnabled = useUserStore((state) => state.features.desktopLocalChannelsEnabled);
     const desktopLocalChannelHostname = typeof window === "undefined" ? "" : window.location.hostname;
@@ -101,6 +101,7 @@ export function ChannelSettingsPane({ onOpenModels, onOpenRunningHub, onOpenComf
     const addChannel = () => {
         const channel = createModelChannel({ name: `渠道 ${userChannels.length + 1}` });
         updateChannels([...config.channels, channel]);
+        setExpandedChannelIds((current) => new Set(current).add(channel.id));
         requestAnimationFrame(() => document.getElementById(`channel-${channel.id}-name`)?.focus());
     };
 
@@ -117,8 +118,8 @@ export function ChannelSettingsPane({ onOpenModels, onOpenRunningHub, onOpenComf
         setLoadingChannelIds((items) => (loading ? Array.from(new Set([...items, id])) : items.filter((item) => item !== id)));
     };
 
-    const toggleChannelCollapsed = (id: string) => {
-        setCollapsedChannelIds((current) => {
+    const toggleChannelExpanded = (id: string) => {
+        setExpandedChannelIds((current) => {
             const next = new Set(current);
             if (next.has(id)) next.delete(id);
             else next.add(id);
@@ -257,7 +258,7 @@ export function ChannelSettingsPane({ onOpenModels, onOpenRunningHub, onOpenComf
             {userChannels.length ? (
                 <div className="settings-channel-list space-y-2">
                     {userChannels.map((channel) => {
-                        const collapsed = collapsedChannelIds.has(channel.id);
+                        const collapsed = !expandedChannelIds.has(channel.id);
                         return (
                             <section key={channel.id} aria-labelledby={`channel-${channel.id}-title`} className="settings-channel p-2.5 sm:p-3">
                                 <div className="mb-2.5 flex flex-wrap items-start justify-between gap-2.5">
@@ -271,7 +272,7 @@ export function ChannelSettingsPane({ onOpenModels, onOpenRunningHub, onOpenComf
                                     <div className="flex w-full justify-end gap-2 sm:w-auto sm:shrink-0">
                                         <Button className="h-10 sm:h-8" size="small" icon={<RefreshCw className="size-3.5" />} loading={loadingChannelIds.includes(channel.id)} disabled={loadingChannelIds.includes("all")} onClick={() => void refreshChannelModels(channel)}>拉取模型</Button>
                                         <Tooltip title={collapsed ? "展开渠道配置" : "收起渠道配置"}>
-                                            <Button className="size-10 p-0 sm:size-8" size="small" type="text" aria-label={`${collapsed ? "展开" : "收起"}渠道配置 ${channel.name || "未命名渠道"}`} aria-expanded={!collapsed} aria-controls={`channel-${channel.id}-details`} icon={collapsed ? <ChevronDown className="size-3.5" /> : <ChevronUp className="size-3.5" />} onClick={() => toggleChannelCollapsed(channel.id)} />
+                                            <Button className="size-10 p-0 sm:size-8" size="small" type="text" aria-label={`${collapsed ? "展开" : "收起"}渠道配置 ${channel.name || "未命名渠道"}`} aria-expanded={!collapsed} aria-controls={`channel-${channel.id}-details`} icon={collapsed ? <ChevronDown className="size-3.5" /> : <ChevronUp className="size-3.5" />} onClick={() => toggleChannelExpanded(channel.id)} />
                                         </Tooltip>
                                         <Popconfirm title="删除个人模型渠道？" description="该渠道关联的模型选择会同时移除。" okText="删除" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={() => deleteChannel(channel.id)}>
                                             <Tooltip title="删除渠道"><Button className="size-10 p-0 sm:size-8" aria-label={`删除渠道 ${channel.name || "未命名渠道"}`} size="small" type="text" danger disabled={loadingChannelIds.includes(channel.id) || loadingChannelIds.includes("all")} icon={<Trash2 className="size-3.5" />} /></Tooltip>

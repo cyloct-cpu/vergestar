@@ -129,7 +129,7 @@ func proxyCustomRelayRequestWithService(c *gin.Context, policy service.RuntimeRe
 
 	resp, err := customRelayClient(time.Duration(policy.CustomRelayTimeoutMinutes)*time.Minute, target, requestedAllowLocal, desktopLocalChannelsEnabled).Do(upstreamReq)
 	if err != nil {
-		fail(c, http.StatusBadGateway, errors.New(userFacingRelayError(svc, errors.New("自定义渠道上游连接失败"))))
+		fail(c, http.StatusBadGateway, errors.New(userFacingRelayError(svc, fmt.Errorf("自定义渠道上游连接失败：%w", err))))
 		return
 	}
 	defer resp.Body.Close()

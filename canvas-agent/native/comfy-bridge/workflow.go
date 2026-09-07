@@ -23,6 +23,9 @@ func discoverWorkflowFields(workflow jsonMap, capability string) []any {
 	fields := make([]any, 0)
 	nodeIDs := sortedNodeIDs(workflow)
 	promptNode, promptField := findWorkflowPromptTarget(workflow, nodeIDs)
+	promptFields := promptTargetFields(workflow, nodeIDs)
+	graph := workflowProducerGraph(workflow)
+	branches := workflowImageBranches(workflow, nodeIDs, graph)
 	imageOrder, videoOrder, audioOrder := 0, 0, 0
 	for _, nodeID := range nodeIDs {
 		node, ok := mapValue(workflow[nodeID])
@@ -53,14 +56,26 @@ func discoverWorkflowFields(workflow jsonMap, capability string) []any {
 			}
 			fieldType := discoveredFieldType(fieldName, fieldValue, classType)
 			label := fieldName
+			if title != "" && durationNodeTitle(title) {
+				// H3 等模板把时长语义放在 PrimitiveFloat/PrimitiveInt 的节点标题里，
+				// widget 输入名通常是 value；这里同步到稳定的 Bridge 参数来源。
+				fieldType = "DURATION"
+			}
 			if title != "" {
 				label = title + " · " + fieldName
 			}
-			field := jsonMap{"id": nodeID + "::" + fieldName, "nodeId": nodeID, "fieldName": fieldName, "fieldValue": fieldValue, "fieldType": fieldType, "label": label, "enabled": true}
-			if nodeID == promptNode && fieldName == promptField {
+			field := jsonMap{"id": nodeID + "::" + fieldName, "nodeId": nodeID, "fieldName": fieldName, "classType": classType, "fieldValue": fieldValue, "fieldType": fieldType, "label": label, "enabled": true}
+			if strings.EqualFold(fieldType, "DURATION") {
+				// H3 等模板用 PrimitiveFloat 只携带当前时长，没有 widget 配置。
+				// 这是 MiniMax H3 的官方有效范围；显式 min/max/options 仍然优先。
+				field["min"] = 4
+				field["max"] = 15
+				field["step"] = 1
+			}
+			if (nodeID == promptNode && fieldName == promptField) || promptFields[nodeID+"::"+fieldName] {
 				field["source"] = "prompt"
 				field["required"] = true
-			} else if source := discoveredDynamicSource(fieldName, fieldType, capability); source != "" {
+			} else if source := discoveredDynamicSource(fieldName, fieldType, classType, capability); source != "" {
 				field["source"] = source
 			}
 			switch normalizeSourceName(stringValue(field["source"])) {
@@ -69,9 +84,15 @@ func discoverWorkflowFields(workflow jsonMap, capability string) []any {
 				field["imageOrder"] = imageOrder
 				field["sourceIndex"] = imageOrder - 1
 				field["required"] = imageOrder == 1
+				if role := workflowImageRole(field, title); role != "" {
+					field["role"] = role
+				}
+				if branch := branches[nodeID]; branch != "" {
+					field["mediaBranch"] = branch
+				}
 			case "referencevideo":
 				field["sourceIndex"] = videoOrder
-				field["required"] = videoOrder == 0
+				field["required"] = false
 				videoOrder++
 			case "referenceaudio":
 				field["sourceIndex"] = audioOrder
@@ -87,6 +108,109 @@ func discoverWorkflowFields(workflow jsonMap, capability string) []any {
 		}
 	}
 	return fields
+}
+
+// promptTargetFields 返回模型节点的直接 prompt 输入。MiniMax H3 等工作流可能
+// 同时保留 CLIPTextEncode 和模型节点内置 prompt，分支不同时只有一个可达，
+// 因此这里允许多个 prompt 字段一起参与映射。
+func promptTargetFields(workflow jsonMap, nodeIDs []string) map[string]bool {
+	promptNode, promptField := findWorkflowPromptTarget(workflow, nodeIDs)
+	result := make(map[string]bool)
+	if promptNode != "" && promptField != "" {
+		result[promptNode+"::"+promptField] = true
+	}
+	for _, nodeID := range nodeIDs {
+		node, ok := mapValue(workflow[nodeID])
+		if !ok {
+			continue
+		}
+		inputs, ok := mapValue(node["inputs"])
+		if !ok || !directModelPromptInput(stringValue(node["class_type"])) {
+			continue
+		}
+		for fieldName, value := range inputs {
+			if _, ok := value.(string); !ok {
+				continue
+			}
+			if normalizeSourceName(fieldName) == "prompt" {
+				result[nodeID+"::"+fieldName] = true
+			}
+		}
+	}
+	return result
+}
+
+func directModelPromptInput(classType string) bool {
+	key := normalizeSourceName(classType)
+	return stringContainsAny(key, "minimaxh3", "imagetovideo", "referencetovideo")
+}
+
+func workflowProducerGraph(workflow jsonMap) map[string][]string {
+	graph := make(map[string][]string)
+	for nodeID, raw := range workflow {
+		node, ok := mapValue(raw)
+		if !ok {
+			continue
+		}
+		inputs, ok := mapValue(node["inputs"])
+		if !ok {
+			continue
+		}
+		for _, value := range inputs {
+			link := sliceValue(value)
+			if len(link) == 0 {
+				continue
+			}
+			source := stringValue(link[0])
+			if source == "" || source == nodeID {
+				continue
+			}
+			graph[source] = append(graph[source], nodeID)
+		}
+	}
+	return graph
+}
+
+// workflowImageBranches 按 LoadImage 的下游可达模型判断图片属于哪条视频分支。
+// 整合工作流常把首尾帧和多参考画在同一张图里，按字段顺序分配会把两张图
+// 抢给先声明的首尾帧分支，导致多参考节点拿不到图。
+func workflowImageBranches(workflow jsonMap, nodeIDs []string, graph map[string][]string) map[string]string {
+	branches := make(map[string]string)
+	for _, nodeID := range nodeIDs {
+		node, ok := mapValue(workflow[nodeID])
+		if !ok || !strings.Contains(normalizeSourceName(stringValue(node["class_type"])), "loadimage") {
+			continue
+		}
+		visited := make(map[string]bool)
+		stack := append([]string{}, graph[nodeID]...)
+		branch := ""
+		for len(stack) > 0 {
+			next := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			if visited[next] {
+				continue
+			}
+			visited[next] = true
+			node, ok := mapValue(workflow[next])
+			if !ok {
+				continue
+			}
+			classKey := normalizeSourceName(stringValue(node["class_type"]))
+			if branch == "" && strings.Contains(classKey, "referencetovideo") {
+				branch = "reference"
+			} else if branch == "" && strings.Contains(classKey, "imagetovideo") {
+				branch = "frames"
+			}
+			if branch != "" {
+				break
+			}
+			stack = append(stack, graph[next]...)
+		}
+		if branch != "" {
+			branches[nodeID] = branch
+		}
+	}
+	return branches
 }
 
 // discoverWorkflowGraph 将 ComfyUI 画布 JSON 压缩成网页只读预览所需的节点和连线。
@@ -177,6 +301,11 @@ func convertComfyCanvasWorkflow(workflow jsonMap) jsonMap {
 		if nodeID == "" || classType == "" || isCanvasAnnotationNode(classType) {
 			continue
 		}
+		// 模板可能保留禁用的视频拆解或预览节点。加载器仍要留给动态素材，
+		// 但这些节点直接转换后会让 ComfyUI 校验缺失的示例媒体。
+		if isBypassedOptionalMediaConsumer(node, classType) {
+			continue
+		}
 		inputs := make(jsonMap)
 		namedWidgets := make(jsonMap)
 		if rawNamed, ok := mapValue(node["widgets_values_named"]); ok {
@@ -194,6 +323,9 @@ func convertComfyCanvasWorkflow(workflow jsonMap) jsonMap {
 				continue
 			}
 			if linkKey := workflowNumberKey(input["link"]); linkKey != "" {
+				if _, hasWidget := input["widget"]; hasWidget && widgetIndex < len(widgetValues) {
+					widgetIndex++
+				}
 				if link, exists := links[linkKey]; exists {
 					fromNode := strings.TrimSpace(stringValue(link[1]))
 					fromSlot := int(numberValue(link[2]))
@@ -208,12 +340,18 @@ func convertComfyCanvasWorkflow(workflow jsonMap) jsonMap {
 				widgetName = firstNonEmpty(stringValue(widget["name"]), fieldName)
 			}
 			if value, exists := namedWidgets[widgetName]; exists {
-				inputs[fieldName] = value
+				// UI 模板会保留未配置控件的 null。发送 null 会让 ComfyUI 的
+				// 组合框校验失败，这里跳过并让其使用服务端默认值。
+				if value != nil {
+					inputs[fieldName] = value
+				}
 				widgetIndex++
 				continue
 			}
 			if _, hasWidget := input["widget"]; hasWidget && widgetIndex < len(widgetValues) {
-				inputs[fieldName] = widgetValues[widgetIndex]
+				if widgetValues[widgetIndex] != nil {
+					inputs[fieldName] = widgetValues[widgetIndex]
+				}
 				widgetIndex++
 			}
 		}
@@ -221,12 +359,81 @@ func convertComfyCanvasWorkflow(workflow jsonMap) jsonMap {
 		if title := firstNonEmpty(stringValue(node["title"]), nodeTitle(node)); title != "" {
 			apiNode["_meta"] = jsonMap{"title": title}
 		}
+		if nodeModeIsBypassed(node) {
+			apiNode["_canvasBypassed"] = true
+		}
 		converted[nodeID] = apiNode
 	}
 	if len(converted) == 0 {
 		return nil
 	}
+	bypassUnconfiguredLoraNodes(converted)
 	return converted
+}
+
+// 画布模板可能保留未选择 LoRA 的加载节点。API 模式不会自动补组合框默认值，
+// 这类节点会让必填校验失败；这里把模型连接旁路到下游，保持模板其余部分可执行。
+func bypassUnconfiguredLoraNodes(workflow jsonMap) {
+	replacements := make(map[string][]any)
+	invalid := make(map[string]bool)
+	for nodeID, rawNode := range workflow {
+		node, ok := rawNode.(jsonMap)
+		if !ok || !isUnconfiguredLoraNode(node) {
+			continue
+		}
+		inputs, ok := node["inputs"].(jsonMap)
+		if !ok {
+			invalid[nodeID] = true
+			continue
+		}
+		modelLink, ok := inputs["model"].([]any)
+		if !ok || len(modelLink) < 2 || stringValue(modelLink[0]) == "" {
+			invalid[nodeID] = true
+			continue
+		}
+		replacements[nodeID] = modelLink
+	}
+	if len(replacements) == 0 && len(invalid) == 0 {
+		return
+	}
+	for nodeID := range replacements {
+		delete(workflow, nodeID)
+	}
+	for nodeID := range invalid {
+		delete(workflow, nodeID)
+	}
+	for _, rawNode := range workflow {
+		node, ok := rawNode.(jsonMap)
+		if !ok {
+			continue
+		}
+		inputs, ok := node["inputs"].(jsonMap)
+		if !ok {
+			continue
+		}
+		for fieldName, value := range inputs {
+			link, ok := value.([]any)
+			if !ok || len(link) == 0 {
+				continue
+			}
+			if replacement, exists := replacements[stringValue(link[0])]; exists {
+				inputs[fieldName] = append([]any{}, replacement...)
+			}
+		}
+	}
+}
+
+func isUnconfiguredLoraNode(node jsonMap) bool {
+	classType := strings.ToLower(firstNonEmpty(stringValue(node["class_type"]), stringValue(node["type"])))
+	if classType != "loraloader" && classType != "loraloadermodelonly" {
+		return false
+	}
+	inputs, ok := node["inputs"].(jsonMap)
+	if !ok {
+		return true
+	}
+	_, hasLora := inputs["lora_name"]
+	return !hasLora
 }
 
 func isCanvasAnnotationNode(classType string) bool {
@@ -239,6 +446,7 @@ func isCanvasAnnotationNode(classType string) bool {
 		normalized == "label (rgthree)" ||
 		normalized == "label" ||
 		normalized == "addlabel" ||
+		normalized == "easy showanything" ||
 		normalized == "fast groups bypasser (rgthree)" ||
 		normalized == "fast groups bypasser"
 }
@@ -285,6 +493,7 @@ func sortedNodeIDs(workflow jsonMap) []string {
 
 func findWorkflowPromptTarget(workflow jsonMap, nodeIDs []string) (string, string) {
 	bestNode, bestField, bestScore := "", "", math.MinInt
+	bestUserPrompt, userField, bestUserScore := "", "", math.MinInt
 	for _, nodeID := range nodeIDs {
 		node, ok := mapValue(workflow[nodeID])
 		if !ok {
@@ -317,10 +526,28 @@ func findWorkflowPromptTarget(workflow jsonMap, nodeIDs []string) (string, strin
 			if isPromptWorkflowField(jsonMap{"fieldName": fieldName}) {
 				score += 2
 			}
+			if directModelPromptInput(classType) {
+				score += 50
+			}
+			// 常见模板会把“用户输入”放在 User Prompt、把系统规则放在 System Prompt。
+			// 用户提示词必须优先绑定到 User Prompt，否则测试输入只会替换生成规则。
+			isUserPrompt := strings.Contains(descriptor, "user prompt") ||
+				strings.Contains(normalizeSourceName(fieldName), "userprompt") ||
+				strings.Contains(title, "用户提示词") ||
+				strings.Contains(title, "用户输入")
+			if isUserPrompt {
+				score += 40
+			}
 			if bestNode == "" || score > bestScore {
 				bestNode, bestField, bestScore = nodeID, fieldName, score
 			}
+			if isUserPrompt && score > bestUserScore {
+				bestUserPrompt, userField, bestUserScore = nodeID, fieldName, score
+			}
 		}
+	}
+	if bestUserPrompt != "" {
+		return bestUserPrompt, userField
 	}
 	return bestNode, bestField
 }
@@ -351,7 +578,7 @@ func discoveredFieldType(fieldName string, value any, classType string) string {
 	if strings.Contains(classKey, "loadaudio") && stringIn(key, "audio", "file", "path") {
 		return "AUDIO"
 	}
-	if discoveredNamedDynamicSource(fieldName, "") != "" {
+	if discoveredNamedDynamicSource(fieldName, classType, "") != "" {
 		return scalarFieldType(value)
 	}
 	switch value.(type) {
@@ -392,9 +619,12 @@ func mediaValueType(value any) string {
 	return ""
 }
 
-func discoveredDynamicSource(fieldName, fieldType, capability string) string {
-	if source := discoveredNamedDynamicSource(fieldName, capability); source != "" {
+func discoveredDynamicSource(fieldName, fieldType, classType, capability string) string {
+	if source := discoveredNamedDynamicSource(fieldName, classType, capability); source != "" {
 		return source
+	}
+	if strings.EqualFold(strings.TrimSpace(fieldType), "DURATION") {
+		return "videoSeconds"
 	}
 	switch strings.ToUpper(strings.TrimSpace(fieldType)) {
 	case "IMAGE":
@@ -408,8 +638,17 @@ func discoveredDynamicSource(fieldName, fieldType, capability string) string {
 	}
 }
 
-func discoveredNamedDynamicSource(fieldName, capability string) string {
+func discoveredNamedDynamicSource(fieldName, classType, capability string) string {
 	key := normalizeSourceName(fieldName)
+	classKey := normalizeSourceName(classType)
+	if classKey == "resolutionselector" {
+		if key == "aspectratio" {
+			return "aspectRatio"
+		}
+		if key == "megapixels" {
+			return "vquality"
+		}
+	}
 	if strings.Contains(key, "mask") {
 		return "mask"
 	}
@@ -441,6 +680,13 @@ func discoveredNamedDynamicSource(fieldName, capability string) string {
 		"transparent": "transparentBackground", "transparentbackground": "transparentBackground",
 	}
 	return aliases[key]
+}
+
+func durationNodeTitle(title string) bool {
+	key := normalizeSourceName(title)
+	return (strings.Contains(key, "duration") || strings.Contains(key, "seconds") ||
+		strings.Contains(key, "时长") || strings.Contains(key, "秒数")) &&
+		!strings.Contains(key, "frame") && !strings.Contains(key, "帧")
 }
 
 var dimensionPrefixes = []string{"", "image", "video", "size", "output", "target", "latent", "frame", "canvas", "source", "resolution", "final"}
@@ -511,8 +757,9 @@ func normalizeSourceName(value string) string {
 }
 
 func validateWorkflowMediaInputs(fields []any, payload jsonMap) error {
-	capacities := map[string]int{"referenceimage": 0, "referencevideo": 0, "referenceaudio": 0}
+	capacities := map[string]int{"referencevideo": 0, "referenceaudio": 0}
 	hasMask := false
+	referenceFields := make([]any, 0)
 	for _, raw := range fields {
 		field, ok := mapValue(raw)
 		if !ok || field["enabled"] == false {
@@ -525,6 +772,9 @@ func validateWorkflowMediaInputs(fields []any, payload jsonMap) error {
 		}
 		key := canonicalMediaSource(source)
 		if _, ok := capacities[key]; !ok {
+			if key == "referenceimage" {
+				referenceFields = append(referenceFields, raw)
+			}
 			continue
 		}
 		index := workflowSourceIndex(field)
@@ -532,6 +782,7 @@ func validateWorkflowMediaInputs(fields []any, payload jsonMap) error {
 			capacities[key] = index + 1
 		}
 	}
+	capacities["referenceimage"] = effectiveReferenceImageCapacity(referenceFields, payload)
 	checks := []struct {
 		label string
 		key   string
@@ -549,8 +800,32 @@ func validateWorkflowMediaInputs(fields []any, payload jsonMap) error {
 	return nil
 }
 
+// effectiveReferenceImageCapacity 与图片分配使用同一套分支过滤。UI 模板常保留
+// 首尾帧和未连接的 LoadImage 示例节点；多参考模式下它们不会真正消费素材，
+// 提交前不能把这类展示节点算成可用槽位。
+func effectiveReferenceImageCapacity(fields []any, payload jsonMap) int {
+	allocation := newReferenceImageAllocation(payload)
+	capacity := 0
+	for _, raw := range fields {
+		field, ok := mapValue(raw)
+		if !ok || normalizedWorkflowFieldSource(field) != "referenceimage" {
+			continue
+		}
+		branch := stringValue(field["mediaBranch"])
+		if allocation.preferredBranch != "" && branch != "" && branch != allocation.preferredBranch {
+			continue
+		}
+		if allocation.preferredBranch == "reference" && allocation.hasDirectReference && !isDirectReferenceImageField(field) {
+			continue
+		}
+		capacity++
+	}
+	return capacity
+}
+
 func applyWorkflowFields(workflow jsonMap, payload jsonMap, files map[string]string) error {
 	fields := sliceValue(payload["workflowFields"])
+	imageAllocation := newReferenceImageAllocation(payload)
 	removed := map[string]bool{}
 	for _, raw := range fields {
 		field, ok := mapValue(raw)
@@ -569,14 +844,25 @@ func applyWorkflowFields(workflow jsonMap, payload jsonMap, files map[string]str
 			}
 			continue
 		}
+		source := normalizedWorkflowFieldSource(field)
+		if nodeModeIsBypassed(node) && isMediaSource(source) {
+			inputs, inputsOK := mapValue(node["inputs"])
+			if !inputsOK {
+				inputs = jsonMap{}
+			}
+			fieldName := firstNonEmpty(stringValue(field["fieldName"]), stringValue(field["input"]))
+			if fieldName != "" {
+				delete(inputs, fieldName)
+				node["inputs"] = inputs
+			}
+		}
 		inputs, ok := mapValue(node["inputs"])
 		if !ok {
 			inputs = jsonMap{}
 		}
-		source := normalizedWorkflowFieldSource(field)
 		value := firstValue(field["value"], field["fieldValue"], field["default"])
 		if source != "" {
-			value = resolveSource(source, field, payload, files)
+			value = resolveSource(source, field, payload, files, imageAllocation)
 		} else if boolValue(field["randomEnabled"]) || boolValue(field["random_enabled"]) {
 			var err error
 			value, err = randomWorkflowValue(field)
@@ -588,19 +874,20 @@ func applyWorkflowFields(workflow jsonMap, payload jsonMap, files map[string]str
 			inputs[fieldName] = normalizeComfyValue(value)
 		} else if boolValue(field["required"]) {
 			return fmt.Errorf("工作流必填字段 %s.%s 缺少值", nodeID, fieldName)
-		} else if isMediaSource(source) {
+		} else if isMediaSource(normalizedWorkflowFieldSource(field)) {
 			delete(inputs, fieldName)
 		}
 		node["inputs"] = inputs
-		if len(inputs) == 0 && isMediaSource(source) {
-			removed[nodeID] = true
-		}
+	}
+	emptyMediaLoaders, removedEmpty := removeEmptyMediaLoaderNodes(workflow, fields)
+	for nodeID := range emptyMediaLoaders {
+		removed[nodeID] = true
+	}
+	if !removedEmpty && len(removed) == 0 {
+		return nil
 	}
 	for nodeID := range removed {
 		delete(workflow, nodeID)
-	}
-	if len(removed) == 0 {
-		return nil
 	}
 	for _, rawNode := range workflow {
 		node, ok := mapValue(rawNode)
@@ -618,7 +905,180 @@ func applyWorkflowFields(workflow jsonMap, payload jsonMap, files map[string]str
 			}
 		}
 	}
+	// 旁路节点可能在转换阶段就已移除，但它们仍会留下指向不存在节点的输出。
+	// ComfyUI 的递归校验会把这些悬空 link 一起执行，所以提交前必须统一清理。
+	for _, rawNode := range workflow {
+		node, ok := mapValue(rawNode)
+		if !ok {
+			continue
+		}
+		inputs, ok := mapValue(node["inputs"])
+		if !ok {
+			continue
+		}
+		for fieldName, value := range inputs {
+			if !isWorkflowLink(value) {
+				continue
+			}
+			source := stringValue(sliceValue(value)[0])
+			if _, exists := workflow[source]; !exists {
+				delete(inputs, fieldName)
+			}
+		}
+	}
+	// 禁用/旁路的展示与拆解节点常只是为了让前端能预览模板里的示例媒体。
+	// 它们的媒体来源被删除后不应继续提交，否则 ComfyUI 会把这些旁路节点
+	// 中的 required input 也纳入校验。
+	for nodeID, rawNode := range workflow {
+		node, ok := mapValue(rawNode)
+		if !ok || !isOptionalMediaConsumer(node) {
+			continue
+		}
+		inputs, ok := mapValue(node["inputs"])
+		if !ok {
+			continue
+		}
+		missingRequiredMedia := false
+		for fieldName, value := range inputs {
+			if !isWorkflowLink(value) {
+				continue
+			}
+			source := stringValue(sliceValue(value)[0])
+			if !removed[source] {
+				continue
+			}
+			delete(inputs, fieldName)
+			missingRequiredMedia = true
+		}
+		if missingRequiredMedia {
+			removed[nodeID] = true
+			delete(workflow, nodeID)
+		}
+	}
 	return nil
+}
+
+// removeEmptyMediaLoaderNodes 清理未被画布素材填充的 LoadImage/LoadVideo/LoadAudio。
+// 这类节点常带 upload 等辅助控件；只删除媒体输入会留下空节点，导致 ComfyUI
+// 仍尝试读取模板中的示例文件，或把下游 ref_image 槽位当成悬空输入。
+func removeEmptyMediaLoaderNodes(workflow jsonMap, fields []any) (map[string]bool, bool) {
+	fieldSources := make(map[string]jsonMap)
+	for _, raw := range fields {
+		field, ok := mapValue(raw)
+		if !ok {
+			continue
+		}
+		nodeID := firstNonEmpty(stringValue(field["nodeId"]), stringValue(field["node"]))
+		fieldName := firstNonEmpty(stringValue(field["fieldName"]), stringValue(field["input"]))
+		if nodeID == "" || fieldName == "" {
+			continue
+		}
+		key := nodeID + "::" + fieldName
+		fieldSources[key] = field
+	}
+
+	removed := map[string]bool{}
+	for nodeID, rawNode := range workflow {
+		node, ok := mapValue(rawNode)
+		if !ok || !isMediaLoaderNode(node) {
+			continue
+		}
+		inputs, ok := mapValue(node["inputs"])
+		if !ok {
+			continue
+		}
+		classKey := normalizeSourceName(stringValue(node["class_type"]))
+		hasMedia := false
+		for fieldName, value := range inputs {
+			if !isMediaLoaderPrimaryInput(classKey, normalizeSourceName(fieldName)) {
+				continue
+			}
+			if isWorkflowLink(value) {
+				hasMedia = true
+				continue
+			}
+			field := fieldSources[nodeID+"::"+fieldName]
+			if !emptyWorkflowValue(value) && boolValue(field["enabled"]) {
+				hasMedia = true
+				continue
+			}
+			if enabled, exists := field["enabled"]; exists && enabled == false {
+				hasMedia = true
+				continue
+			}
+			if hasMediaLoaderFilename(value) {
+				hasMedia = true
+			}
+		}
+		if !hasMedia {
+			removed[nodeID] = true
+		}
+	}
+	for nodeID := range removed {
+		delete(workflow, nodeID)
+	}
+	for _, rawNode := range workflow {
+		node, ok := mapValue(rawNode)
+		if !ok {
+			continue
+		}
+		delete(node, "_canvasBypassed")
+	}
+	return removed, len(removed) > 0
+}
+
+func isMediaLoaderNode(node jsonMap) bool {
+	classKey := normalizeSourceName(stringValue(node["class_type"]))
+	return stringContainsAny(classKey, "loadimage", "loadvideo", "loadaudio")
+}
+
+func isMediaLoaderPrimaryInput(classKey, fieldName string) bool {
+	switch {
+	case strings.Contains(classKey, "loadimage"):
+		return fieldName == "image"
+	case strings.Contains(classKey, "loadvideo"):
+		return fieldName == "file" || fieldName == "video"
+	case strings.Contains(classKey, "loadaudio"):
+		return fieldName == "audio"
+	default:
+		return false
+	}
+}
+
+func isOptionalMediaConsumer(node jsonMap) bool {
+	return nodeModeIsBypassed(node) && isOptionalMediaConsumerClassType(stringValue(node["class_type"]))
+}
+
+func isBypassedOptionalMediaConsumer(node jsonMap, classType string) bool {
+	return nodeModeIsBypassed(node) && isOptionalMediaConsumerClassType(classType)
+}
+
+func nodeModeIsBypassed(node jsonMap) bool {
+	switch int(numberValue(node["mode"])) {
+	case 2, 4:
+	default:
+		return false
+	}
+	return true
+}
+
+func isOptionalMediaConsumerClassType(classType string) bool {
+	classKey := normalizeSourceName(classType)
+	return stringContainsAny(classKey,
+		"getvideocomponents", "getimagecomponents", "getaudiocomponents",
+		"showanything", "showtext", "previewimage", "previewvideo", "previewaudio",
+	)
+}
+
+func hasMediaLoaderFilename(value any) bool {
+	text := stringValue(value)
+	if text == "" {
+		return false
+	}
+	return hasAnySuffix(text,
+		".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".avif",
+		".mp4", ".webm", ".mov", ".m4v", ".mkv",
+		".mp3", ".wav", ".ogg", ".m4a", ".flac", ".aac")
 }
 
 func normalizedWorkflowFieldSource(field jsonMap) string {
@@ -670,7 +1130,7 @@ func integerFieldBound(value any, fallback int64) (int64, error) {
 	return parsed, nil
 }
 
-func resolveSource(source string, field, payload jsonMap, files map[string]string) any {
+func resolveSource(source string, field, payload jsonMap, files map[string]string, imageAllocation *referenceImageAllocation) any {
 	normalized := normalizeSourceName(source)
 	if stringIn(normalized, "prompt", "text", "positiveprompt", "positive") {
 		return stringValue(payload["prompt"])
@@ -681,7 +1141,7 @@ func resolveSource(source string, field, payload jsonMap, files map[string]strin
 		return params["size"]
 	case normalized == "resolution":
 		if strings.ToLower(stringValue(payload["mode"])) == "video" {
-			return videoResolutionValue(field, params["vquality"])
+			return videoResolutionValue(field, params["vquality"], stringValue(params["size"]))
 		}
 		return params["size"]
 	case stringIn(normalized, "aspectratio", "ratio", "imageaspectratio", "imageratio", "videoaspectratio", "videoratio"):
@@ -697,7 +1157,7 @@ func resolveSource(source string, field, payload jsonMap, files map[string]strin
 		"audioformat": "audioFormat", "systemprompt": "systemPrompt", "transparentbackground": "transparentBackground", "audiovoice": "audioVoice", "voice": "audioVoice", "audiospeed": "audioSpeed", "audioinstructions": "audioInstructions",
 	}
 	if stringIn(normalized, "vquality", "videoquality", "videoresolution") {
-		return videoResolutionValue(field, params["vquality"])
+		return videoResolutionValue(field, params["vquality"], stringValue(params["size"]))
 	}
 	if key := aliases[normalized]; key != "" {
 		return params[key]
@@ -713,12 +1173,177 @@ func resolveSource(source string, field, payload jsonMap, files map[string]strin
 		values = payload["referenceAudios"]
 	}
 	items := sliceValue(values)
+	if canonicalMediaSource(normalized) == "referenceimage" {
+		if imageAllocation == nil {
+			imageAllocation = newReferenceImageAllocation(payload)
+		}
+		if media := imageAllocation.resolve(field, items); media != nil {
+			return files[stringValue(media["id"])]
+		}
+		return nil
+	}
 	index := workflowSourceIndex(field)
 	if index < 0 || index >= len(items) {
 		return nil
 	}
 	media, _ := mapValue(items[index])
 	return files[stringValue(media["id"])]
+}
+
+type referenceImageAllocation struct {
+	startID               string
+	endID                 string
+	hasExplicitFrameRoles bool
+	preferredBranch       string
+	hasDirectReference    bool
+	used                  map[string]bool
+}
+
+func newReferenceImageAllocation(payload jsonMap) *referenceImageAllocation {
+	metadata, _ := mapValue(payload["metadata"])
+	startID := ""
+	endID := ""
+	hasExplicitFrameRoles := false
+	preferredBranch := ""
+	hasDirectReference := false
+	startID = firstNonEmpty(stringValue(metadata["videoStartFrameNodeId"]), stringValue(metadata["video_start_frame_node_id"]))
+	endID = firstNonEmpty(stringValue(metadata["videoEndFrameNodeId"]), stringValue(metadata["video_end_frame_node_id"]))
+	switch strings.ToLower(strings.TrimSpace(stringValue(metadata["videoEditOperation"]))) {
+	case "reference_to_video":
+		preferredBranch = "reference"
+	case "image_to_video", "start_end_to_video":
+		preferredBranch = "frames"
+	}
+	fields := sliceValue(payload["workflowFields"])
+	for _, raw := range fields {
+		field, ok := mapValue(raw)
+		if !ok {
+			continue
+		}
+		if role := normalizeWorkflowImageRole(stringValue(field["role"])); role == "first_frame" || role == "last_frame" {
+			hasExplicitFrameRoles = true
+		}
+		if normalizedWorkflowFieldSource(field) == "referenceimage" &&
+			stringValue(field["mediaBranch"]) == "reference" &&
+			isDirectReferenceImageField(field) {
+			hasDirectReference = true
+		}
+	}
+	items := sliceValue(payload["referenceImages"])
+	if startID != "" || endID != "" {
+		startID, endID = inferReferenceImageFrameIDs(items, startID, endID)
+	}
+	return &referenceImageAllocation{startID: startID, endID: endID, hasExplicitFrameRoles: hasExplicitFrameRoles, preferredBranch: preferredBranch, hasDirectReference: hasDirectReference, used: map[string]bool{}}
+}
+
+func (allocation *referenceImageAllocation) resolve(field jsonMap, items []any) jsonMap {
+	if branch := stringValue(field["mediaBranch"]); allocation.preferredBranch != "" && branch != "" && branch != allocation.preferredBranch {
+		return nil
+	}
+	if allocation.preferredBranch == "reference" && allocation.hasDirectReference && !isDirectReferenceImageField(field) {
+		return nil
+	}
+	role := normalizeWorkflowImageRole(stringValue(field["role"]))
+	switch role {
+	case "first_frame":
+		return allocation.claim(allocation.startID, items)
+	case "last_frame":
+		return allocation.claim(allocation.endID, items)
+	case "reference_image":
+		return allocation.claim("", items)
+	}
+	return allocation.claim("", items)
+}
+
+func isDirectReferenceImageField(field jsonMap) bool {
+	return strings.Contains(normalizeSourceName(stringValue(field["classType"])), "referencetovideo") &&
+		strings.Contains(normalizeSourceName(stringValue(field["fieldName"])), "refimage")
+}
+
+func (allocation *referenceImageAllocation) claim(preferredID string, items []any) jsonMap {
+	if preferredID != "" {
+		for _, raw := range items {
+			media, ok := mapValue(raw)
+			if !ok || stringValue(media["id"]) != preferredID || allocation.used[preferredID] {
+				continue
+			}
+			allocation.used[preferredID] = true
+			return media
+		}
+	}
+	for _, raw := range items {
+		media, ok := mapValue(raw)
+		if !ok {
+			continue
+		}
+		id := stringValue(media["id"])
+		if id == "" || allocation.used[id] {
+			continue
+		}
+		if preferredID == "" && allocation.hasExplicitFrameRoles && (id == allocation.startID || id == allocation.endID) {
+			continue
+		}
+		allocation.used[id] = true
+		return media
+	}
+	return nil
+}
+
+func inferReferenceImageFrameIDs(items []any, startID, endID string) (string, string) {
+	if len(items) == 0 {
+		return startID, endID
+	}
+	first, _ := mapValue(items[0])
+	if startID == "" {
+		startID = stringValue(first["id"])
+	}
+	if len(items) > 1 && endID == "" {
+		last, _ := mapValue(items[1])
+		endID = stringValue(last["id"])
+	}
+	return startID, endID
+}
+
+func mediaByID(items []any, id string) jsonMap {
+	for _, raw := range items {
+		media, ok := mapValue(raw)
+		if ok && stringValue(media["id"]) == id {
+			return media
+		}
+	}
+	return nil
+}
+
+func workflowImageRole(field jsonMap, title string) string {
+	descriptor := normalizeSourceName(strings.Join([]string{
+		stringValue(field["fieldName"]),
+		stringValue(field["classType"]),
+		title,
+	}, " "))
+	return normalizeWorkflowImageRole(descriptor)
+}
+
+func normalizeWorkflowImageRole(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if stringContainsAny(value, "first_frame", "firstframe", "start_frame", "startframe", "start_image", "startimage", "首帧", "起始帧", "开始帧") {
+		return "first_frame"
+	}
+	if stringContainsAny(value, "last_frame", "lastframe", "end_frame", "endframe", "end_image", "endimage", "尾帧", "结束帧", "末帧", "终帧") {
+		return "last_frame"
+	}
+	if value == "reference_image" {
+		return "reference_image"
+	}
+	return ""
+}
+
+func stringContainsAny(value string, candidates ...string) bool {
+	for _, candidate := range candidates {
+		if strings.Contains(value, candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 func applyPromptFallback(workflow jsonMap, prompt string, fields []any) {
@@ -821,7 +1446,7 @@ func dimensionPart(mode, size, quality string, index int) any {
 	if !ok {
 		return nil
 	}
-	return dimensions[index]
+	return roundStep(dimensions[index], 16)
 }
 
 func pixelDimensions(value string) ([2]int, bool) {
@@ -878,6 +1503,11 @@ func aspectRatioValue(field jsonMap, value any) any {
 		return value
 	}
 	candidates := sliceValue(field["options"])
+	if isResolutionSelectorField(field, "aspectratio") {
+		for _, option := range resolutionSelectorAspectRatioOptions {
+			candidates = append(candidates, option)
+		}
+	}
 	for _, candidate := range []any{field["value"], field["fieldValue"], field["default"]} {
 		if !emptyWorkflowValue(candidate) {
 			candidates = append(candidates, candidate)
@@ -944,14 +1574,14 @@ func videoDimensions(size, quality string) ([2]int, bool) {
 		return [2]int{}, false
 	}
 	parts, ok := ratioParts(ratio)
-	shortEdge := videoResolutionPixels(quality)
+	shortEdge := roundStep(videoResolutionPixels(quality), 16)
 	if !ok || shortEdge == 0 {
 		return [2]int{}, false
 	}
 	if parts[0] >= parts[1] {
-		return [2]int{roundStep(shortEdge*parts[0]/parts[1], 2), shortEdge}, true
+		return [2]int{roundStep(shortEdge*parts[0]/parts[1], 16), shortEdge}, true
 	}
-	return [2]int{shortEdge, roundStep(shortEdge*parts[1]/parts[0], 2)}, true
+	return [2]int{shortEdge, roundStep(shortEdge*parts[1]/parts[0], 16)}, true
 }
 
 func videoResolutionPixels(value any) int {
@@ -970,10 +1600,19 @@ func videoResolutionPixels(value any) int {
 	return parsed
 }
 
-func videoResolutionValue(field jsonMap, value any) any {
+func videoResolutionValue(field jsonMap, value any, size string) any {
 	raw := strings.Trim(stringValue(value), `"`)
 	if raw == "" {
 		return nil
+	}
+	if isResolutionSelectorField(field, "megapixels") {
+		if megapixels := megapixelsForImageShortEdge(size, raw); megapixels != "" {
+			return megapixels
+		}
+		if megapixels := megapixelsForVideoResolution(raw); megapixels != "" {
+			return megapixels
+		}
+		return value
 	}
 	pixels := videoResolutionPixels(raw)
 	if pixels == 0 {
@@ -1009,6 +1648,73 @@ func videoResolutionValue(field jsonMap, value any) any {
 		}
 	}
 	return value
+}
+
+func isResolutionSelectorField(field jsonMap, fieldName string) bool {
+	return normalizeSourceName(stringValue(field["classType"])) == "resolutionselector" &&
+		normalizeSourceName(stringValue(field["fieldName"])) == normalizeSourceName(fieldName)
+}
+
+// MiniMax H3 的 ResolutionSelector 不直接接收 480P/768P，而是用百万像素档位
+// 控制输出面积；这里只映射画布使用的通用档位，其他值仍按原样提交。
+func megapixelsForVideoResolution(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "480", "480p", "low":
+		return "0.4"
+	case "768", "768p", "720", "720p":
+		return "0.9"
+	case "1080", "1080p", "high":
+		return "2.0"
+	default:
+		return ""
+	}
+}
+
+func megapixelsForImageShortEdge(size, tier string) string {
+	shortEdge, ok := imageShortEdgePixels(tier)
+	if !ok {
+		return ""
+	}
+	ratio, ok := aspectRatio(size).(string)
+	if !ok {
+		return ""
+	}
+	parts, ok := ratioParts(ratio)
+	if !ok {
+		return ""
+	}
+	longEdge := float64(shortEdge)
+	if parts[0] > parts[1] {
+		longEdge = float64(shortEdge) * float64(parts[0]) / float64(parts[1])
+	} else if parts[0] < parts[1] {
+		longEdge = float64(shortEdge) * float64(parts[1]) / float64(parts[0])
+	}
+	megapixels := float64(shortEdge) * longEdge / 1048576
+	return strconv.FormatFloat(math.Round(megapixels*10)/10, 'f', -1, 64)
+}
+
+func imageShortEdgePixels(value string) (int, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1k":
+		return 1024, true
+	case "2k":
+		return 2048, true
+	case "4k":
+		return 4096, true
+	default:
+		return 0, false
+	}
+}
+
+var resolutionSelectorAspectRatioOptions = []string{
+	"1:1 (Square)",
+	"2:3 (Portrait Photo)",
+	"3:2 (Photo)",
+	"3:4 (Portrait Standard)",
+	"4:3 (Standard)",
+	"9:16 (Portrait Widescreen)",
+	"16:9 (Widescreen)",
+	"21:9 (Ultrawide)",
 }
 
 func optionString(value any) string {

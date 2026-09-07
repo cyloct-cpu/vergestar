@@ -24,7 +24,7 @@ func TestComfyBridgeRequestSurvivesServiceRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := repository.New(db)
-	bridge := model.ComfyBridge{ID: "bridge-1", UserID: "user-1", Name: "Local", TokenHash: "hash", Enabled: true, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	bridge := model.ComfyBridge{ID: "bridge-1", UserID: "user-1", Name: "Local", TokenHash: "hash", Enabled: true, LastSeenAt: ptr(time.Now()), CreatedAt: time.Now(), UpdatedAt: time.Now()}
 	if err := repo.Create(&bridge); err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestComfyBridgeRequestSurvivesServiceRestart(t *testing.T) {
 
 	// 完成结果先于任务 worker 恢复也不会丢失，恢复时复用原请求 ID 且不重复入队。
 	third := New(repo, t.TempDir())
-	resumed, err := third.enqueueComfyBridgeRequest(context.Background(), bridge.UserID, bridge.ID, "task-1", request.ID, map[string]any{"prompt": "hello"})
+	resumed, err := third.enqueueComfyBridgeRequest(context.Background(), bridge.UserID, bridge.ID, "task-1", request.ID, ComfyBridgeRequestKindGenerate, map[string]any{"prompt": "hello"})
 	if err != nil {
 		t.Fatal(err)
 	}

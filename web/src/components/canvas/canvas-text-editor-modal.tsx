@@ -45,9 +45,10 @@ export function CanvasTextEditorModal({ node, open, onClose, onSave }: CanvasTex
     const [title, setTitle] = useState("");
     const [dirty, setDirty] = useState(false);
     const [saving, setSaving] = useState(false);
+    const extensions = useMemo(() => createCanvasRichTextExtensions("输入文本内容…"), []);
     const editor = useEditor({
         immediatelyRender: false,
-        extensions: createCanvasRichTextExtensions("输入文本内容…"),
+        extensions,
         content: emptyTextDocument(),
         editorProps: {
             attributes: {

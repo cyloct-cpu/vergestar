@@ -87,6 +87,63 @@ func RegisterComfyBridgeRoutes(r *gin.RouterGroup, svc *service.Service) {
 	r.DELETE("/comfy-bridges/:id", revoke)
 	r.POST("/comfy-bridges/:id/revoke", revoke)
 
+	r.POST("/comfy-bridges/:id/comfy-control", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		if err := svc.RequireWorkflowPluginForUser(user.ID, "comfyui-bridge-image"); err != nil {
+			failService(c, err)
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4<<10)
+		var req struct {
+			Action   string                             `json:"action"`
+			Settings service.ComfyBridgeControlSettings `json:"settings"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 65*time.Second)
+		defer cancel()
+		result, err := svc.ControlComfyBridge(ctx, user.ID, c.Param("id"), req.Action, req.Settings)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, result)
+	})
+
+	r.POST("/comfy-bridges/:id/directory-picker", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		if err := svc.RequireWorkflowPluginForUser(user.ID, "comfyui-bridge-image"); err != nil {
+			failService(c, err)
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4<<10)
+		var req struct {
+			Title string `json:"title"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 120*time.Second)
+		defer cancel()
+		result, err := svc.SelectComfyBridgeDirectory(ctx, user.ID, c.Param("id"), req.Title)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, result)
+	})
+
 	r.GET("/comfy-bridge/poll", func(c *gin.Context) {
 		bridge, err := authenticateComfyBridgeRequest(c, svc)
 		if err != nil {

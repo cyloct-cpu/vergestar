@@ -1,16 +1,17 @@
-import { App, Button, Form, Input, Popconfirm, Segmented, Select, Switch } from "antd";
-import { Copy, Download, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { App, Button, Form, Input, Popconfirm, Segmented, Select, Space, Switch } from "antd";
+import { Copy, Download, FolderOpen, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { WorkflowGraphEditor } from "@/components/workflow-graph-editor";
 import { WorkflowTestWorkbench } from "@/components/workflow-test-workbench";
-import { createComfyBridge, listComfyBridges, revokeComfyBridge, type ComfyBridgeSummary } from "@/services/api/comfy-bridge";
-import { normalizeWorkflowFieldMappings, useConfigStore, type ComfyBridgeConfig, type ComfyBridgeWorkflow, type WorkflowFieldMapping, type WorkflowGraphPreview } from "@/stores/use-config-store";
+import { controlComfyBridge, createComfyBridge, listComfyBridges, revokeComfyBridge, selectComfyBridgeDirectory, type ComfyBridgeControlResult, type ComfyBridgeSummary } from "@/services/api/comfy-bridge";
+import { mergeWorkflowFieldMappings, normalizeWorkflowFieldMappings, useConfigStore, type ComfyBridgeConfig, type ComfyBridgeWorkflow, type RunningHubCapability, type WorkflowFieldMapping, type WorkflowGraphPreview } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
 
-type DiscoveredWorkflow = { workflowId: string; title?: string; fields?: WorkflowFieldMapping[]; workflowJson?: Record<string, unknown>; workflowGraph?: WorkflowGraphPreview; format?: "api" | "ui" };
+type DiscoveredWorkflow = { workflowId: string; title?: string; capabilities?: RunningHubCapability[]; fields?: WorkflowFieldMapping[]; workflowJson?: Record<string, unknown>; workflowGraph?: WorkflowGraphPreview; format?: "api" | "ui" };
 type BridgePlatform = "windows" | "linux";
 type LinuxArchitecture = "amd64" | "arm64";
+type ComfyInstallType = NonNullable<ComfyBridgeConfig["comfyInstallType"]>;
 
 export function ComfyUIBridgeSettingsPane() {
     const { message } = App.useApp();
@@ -27,10 +28,14 @@ export function ComfyUIBridgeSettingsPane() {
     const [linuxArchitecture, setLinuxArchitecture] = useState<LinuxArchitecture>(detectLinuxArchitecture);
     const [workflowJsonText, setWorkflowJsonText] = useState("");
     const [workspaceMode, setWorkspaceMode] = useState<"fields" | "test">("fields");
+    const [comfyControlAction, setComfyControlAction] = useState<"start" | "stop" | "detect" | null>(null);
+    const [directoryPickerAction, setDirectoryPickerAction] = useState<"install" | "workflow" | null>(null);
+    const [comfyControlResult, setComfyControlResult] = useState<ComfyBridgeControlResult | undefined>();
 
     const selectedBridge = bridges.find((item) => item.id === config.bridgeId);
     const selectedWorkflow = config.workflows.find((item) => item.workflowId === config.workflowId);
-    const selectedCapability = selectedWorkflow?.capability || config.capability;
+    const selectedCapabilities = selectedWorkflow?.capabilities?.length ? selectedWorkflow.capabilities : [config.capability];
+    const selectedCapability = selectedCapabilities[0];
     const discovered = useMemo(() => discoveredWorkflows(selectedBridge, config.capability), [config.capability, selectedBridge]);
     const draftWorkflowJson = useMemo(() => parseWorkflowJson(workflowJsonText) || selectedWorkflow?.workflowJson, [selectedWorkflow?.workflowJson, workflowJsonText]);
 
@@ -77,20 +82,27 @@ export function ComfyUIBridgeSettingsPane() {
     }, [selectedWorkflow?.workflowId, selectedWorkflow?.workflowJson]);
 
     useEffect(() => {
-        if (!selectedWorkflow) return;
-        const found = discovered.find((item) => item.workflowId === selectedWorkflow.workflowId);
-        const needsFields = !selectedWorkflow.fields?.length && Boolean(found?.fields?.length);
-        const needsJson = !selectedWorkflow.workflowJson && Boolean(found?.workflowJson);
-        const needsGraph = !selectedWorkflow.workflowGraph && Boolean(found?.workflowGraph);
-        if (!needsFields && !needsJson && !needsGraph) return;
-        updateConfig("comfyBridge", {
-            ...config,
-            workflows: config.workflows.map((item) =>
-                item.workflowId === selectedWorkflow.workflowId
-                    ? { ...item, ...(found?.fields?.length ? { fields: found.fields } : {}), ...(found?.workflowJson ? { workflowJson: found.workflowJson } : {}), ...(found?.workflowGraph ? { workflowGraph: found.workflowGraph } : {}) }
-                    : item,
-            ),
+        // 旧快照可能已经保存了一份缺少语义标签的 fields，不能只在其为空时补拉；
+        // 这里用 Bridge 返回的最新 schema 合并用户策略，避免 H3 的时长标签被旧数据卡住。
+        const discoveredById = new Map(discovered.map((item) => [item.workflowId, item]));
+        const nextWorkflows = config.workflows.map((item) => {
+            const found = discoveredById.get(item.workflowId);
+            if (!found) return item;
+            const capability = item.capabilities?.length === 1 ? item.capabilities[0] : item.capability;
+            const mergedFields = found.fields?.length ? mergeWorkflowFieldMappings(item.fields, found.fields, capability) : item.fields;
+            const needsFields = Boolean(found.fields?.length) && JSON.stringify(mergedFields) !== JSON.stringify(item.fields);
+            const needsJson = !item.workflowJson && Boolean(found.workflowJson);
+            const needsGraph = !item.workflowGraph && Boolean(found.workflowGraph);
+            if (!needsFields && !needsJson && !needsGraph) return item;
+            return {
+                ...item,
+                ...(needsFields ? { fields: mergedFields } : {}),
+                ...(needsJson ? { workflowJson: found.workflowJson } : {}),
+                ...(needsGraph ? { workflowGraph: found.workflowGraph } : {}),
+            };
         });
+        if (JSON.stringify(nextWorkflows) === JSON.stringify(config.workflows)) return;
+        updateConfig("comfyBridge", { ...config, workflows: nextWorkflows });
     }, [config, discovered, selectedWorkflow, updateConfig]);
 
     const register = async () => {
@@ -117,6 +129,8 @@ export function ComfyUIBridgeSettingsPane() {
         }
         const found = discovered.find((item) => item.workflowId === normalizedWorkflowId);
         const saved = config.workflows.find((item) => item.workflowId === normalizedWorkflowId);
+        const capabilities = found?.capabilities?.length ? found.capabilities : saved?.capabilities?.length ? saved.capabilities : [config.capability];
+        const trackedCapability = capabilities.includes(config.capability) ? config.capability : capabilities[0];
         const workflows = saved
             ? config.workflows.map((item) =>
                   item.workflowId === normalizedWorkflowId
@@ -133,13 +147,14 @@ export function ComfyUIBridgeSettingsPane() {
                   {
                       workflowId: normalizedWorkflowId,
                       title: found?.title || normalizedWorkflowId,
-                      capability: config.capability,
+                      capability: capabilities[0],
+                      capabilities,
                       fields: found?.fields || [],
                       ...(found?.workflowJson ? { workflowJson: found.workflowJson } : {}),
                       ...(found?.workflowGraph ? { workflowGraph: found.workflowGraph } : {}),
                   },
               ];
-        update({ workflowId: normalizedWorkflowId, capability: saved?.capability || config.capability, workflows });
+        update({ workflowId: normalizedWorkflowId, capability: trackedCapability, lastUsedWorkflows: { ...config.lastUsedWorkflows, [trackedCapability]: normalizedWorkflowId }, workflows });
     };
 
     const revokeSelectedBridge = async () => {
@@ -158,10 +173,16 @@ export function ComfyUIBridgeSettingsPane() {
         }
     };
 
-    const updateWorkflowCapability = (capability: ComfyBridgeConfig["capability"]) => {
+    const updateWorkflowCapabilities = (capabilities: RunningHubCapability[]) => {
         const workflowId = config.workflowId.trim();
-        const workflows = workflowId ? config.workflows.map((item) => (item.workflowId === workflowId ? { ...item, capability, fields: normalizeWorkflowFieldMappings(item.fields, capability) } : item)) : config.workflows;
-        update({ capability, workflows });
+        const normalizedCapabilities = [...new Set(capabilities)];
+        if (!normalizedCapabilities.length) normalizedCapabilities.push(config.capability);
+        const primaryCapability = normalizedCapabilities[0];
+        const fieldCapability = normalizedCapabilities.length === 1 ? primaryCapability : undefined;
+        const workflows = workflowId
+            ? config.workflows.map((item) => (item.workflowId === workflowId ? { ...item, capability: primaryCapability, capabilities: normalizedCapabilities, fields: normalizeWorkflowFieldMappings(item.fields, fieldCapability) } : item))
+            : config.workflows;
+        update({ capability: primaryCapability, workflows });
     };
 
     const saveWorkflow = () => {
@@ -175,8 +196,9 @@ export function ComfyUIBridgeSettingsPane() {
             const next: ComfyBridgeWorkflow = {
                 workflowId,
                 title: current?.title || found?.title || workflowId,
-                capability: selectedCapability,
-                fields: normalizeWorkflowFieldMappings(current?.fields || found?.fields || [], selectedCapability),
+                capability: selectedCapabilities[0],
+                capabilities: selectedCapabilities,
+                fields: normalizeWorkflowFieldMappings(current?.fields || found?.fields || [], selectedCapabilities.length === 1 ? selectedCapabilities[0] : undefined),
                 ...(workflowJson ? { workflowJson } : {}),
                 ...(current?.workflowGraph || found?.workflowGraph ? { workflowGraph: current?.workflowGraph || found?.workflowGraph } : {}),
             };
@@ -190,6 +212,82 @@ export function ComfyUIBridgeSettingsPane() {
     const updateWorkflowFields = (fields: WorkflowFieldMapping[]) => {
         if (!selectedWorkflow) return;
         update({ workflows: config.workflows.map((item) => (item.workflowId === selectedWorkflow.workflowId ? { ...item, fields } : item)) });
+    };
+
+    const runComfyControl = async (action: "start" | "stop" | "detect") => {
+        if (!selectedBridge) return message.warning("请先选择 Bridge 设备");
+        if (!selectedBridge.online) return message.warning("Bridge 离线，无法控制本机 ComfyUI");
+        setComfyControlAction(action);
+        try {
+            const result = await controlComfyBridge(selectedBridge.id, action, {
+                comfyUrl: config.comfyUrl,
+                installDir: config.comfyInstallDir || "",
+                installType: config.comfyInstallType || "auto",
+                port: config.comfyPort || 8188,
+                workflowDir: config.workflowDir,
+            });
+            setComfyControlResult(result);
+            update({
+                comfyUrl: result.comfyUrl ? result.comfyUrl : config.comfyUrl,
+                comfyPort: result.comfyPort || config.comfyPort || 8188,
+            });
+            await reload();
+            message.success(action === "start" ? "ComfyUI 已启动" : action === "stop" ? "ComfyUI 已停止" : "ComfyUI 探测完成");
+        } catch (error) {
+            message.error(error instanceof Error ? `ComfyUI ${action === "start" ? "启动" : action === "stop" ? "停止" : "探测"}失败：${error.message}` : "ComfyUI 控制失败");
+        } finally {
+            setComfyControlAction(null);
+        }
+    };
+
+    const chooseComfyInstallDir = async () => {
+        if (!selectedBridge) return message.warning("请先选择 Bridge 设备");
+        if (!selectedBridge.online) return message.warning("Bridge 离线，无法打开该电脑的系统目录选择器");
+        setDirectoryPickerAction("install");
+        try {
+            const result = await selectComfyBridgeDirectory(selectedBridge.id, "选择 ComfyUI 安装目录");
+            if (!result.cancelled && result.path) {
+                update({ comfyInstallDir: result.path });
+                await controlComfyBridge(selectedBridge.id, "detect", {
+                    comfyUrl: config.comfyUrl,
+                    installDir: result.path,
+                    installType: config.comfyInstallType || "auto",
+                    port: config.comfyPort || 8188,
+                    workflowDir: config.workflowDir,
+                });
+                await reload();
+                message.success("安装目录已生效");
+            }
+        } catch (error) {
+            message.error(error instanceof Error ? `打开目录选择器失败：${error.message}` : "打开目录选择器失败");
+        } finally {
+            setDirectoryPickerAction(null);
+        }
+    };
+
+    const chooseComfyWorkflowDir = async () => {
+        if (!selectedBridge) return message.warning("请先选择 Bridge 设备");
+        if (!selectedBridge.online) return message.warning("Bridge 离线，无法打开该电脑的系统目录选择器");
+        setDirectoryPickerAction("workflow");
+        try {
+            const result = await selectComfyBridgeDirectory(selectedBridge.id, "选择 ComfyUI 工作流目录");
+            if (!result.cancelled && result.path) {
+                update({ workflowDir: result.path });
+                await controlComfyBridge(selectedBridge.id, "detect", {
+                    comfyUrl: config.comfyUrl,
+                    installDir: config.comfyInstallDir || "",
+                    installType: config.comfyInstallType || "auto",
+                    port: config.comfyPort || 8188,
+                    workflowDir: result.path,
+                });
+                await reload();
+                message.success("工作流目录已生效，Bridge 已重新扫描");
+            }
+        } catch (error) {
+            message.error(error instanceof Error ? `打开目录选择器失败：${error.message}` : "打开目录选择器失败");
+        } finally {
+            setDirectoryPickerAction(null);
+        }
     };
 
     return (
@@ -223,13 +321,70 @@ export function ComfyUIBridgeSettingsPane() {
                                 <Input value={config.comfyUrl} placeholder="http://127.0.0.1:8188" onChange={(event) => update({ comfyUrl: event.target.value })} onBlur={(event) => update({ comfyUrl: normalizeComfyURL(event.target.value) })} />
                             </Form.Item>
                             <Form.Item label="工作流目录" className="mb-0" extra="Bridge 从此目录发现 ComfyUI API JSON；也可在下方直接粘贴 JSON。">
-                                <Input
-                                    value={config.workflowDir}
-                                    placeholder={bridgePlatform === "linux" ? "/opt/ComfyUI/user/default/workflows" : "D:\ComfyUI\workflows"}
-                                    onChange={(event) => update({ workflowDir: event.target.value })}
-                                    onBlur={(event) => update({ workflowDir: event.target.value.trim() })}
-                                />
+                                <Space.Compact className="w-full">
+                                    <Input
+                                        value={config.workflowDir}
+                                        placeholder={bridgePlatform === "linux" ? "/opt/ComfyUI/user/default/workflows" : "D:\ComfyUI\workflows"}
+                                        onChange={(event) => update({ workflowDir: event.target.value })}
+                                        onBlur={(event) => update({ workflowDir: event.target.value.trim() })}
+                                    />
+                                    <Button icon={<FolderOpen className="size-3.5" />} loading={directoryPickerAction === "workflow"} disabled={!selectedBridge?.online || directoryPickerAction !== null} title={selectedBridge?.online ? "通过 Bridge 打开系统目录选择器" : "选择 Bridge 设备并确认在线后可使用"} onClick={() => void chooseComfyWorkflowDir()}>
+                                        选择
+                                    </Button>
+                                </Space.Compact>
                             </Form.Item>
+                        </div>
+                        <div className="mt-4 rounded-lg border border-border/60 bg-foreground/[0.03] p-3">
+                            <div className="grid gap-3 lg:grid-cols-3">
+                                <Form.Item label="ComfyUI 安装类型" className="mb-0">
+                                    <Segmented
+                                        block
+                                        value={config.comfyInstallType || "auto"}
+                                        options={[
+                                            { label: "自动", value: "auto" },
+                                            { label: "整合包", value: "portable" },
+                                            { label: "桌面版", value: "desktop" },
+                                        ]}
+                                        onChange={(value) => update({ comfyInstallType: value as ComfyInstallType })}
+                                    />
+                                </Form.Item>
+                                <Form.Item label="安装目录" className="mb-0" extra="通过 Bridge 打开系统目录选择器，返回本机完整路径。">
+                                    <Space.Compact className="w-full">
+                                        <Input
+                                            value={config.comfyInstallDir}
+                                            placeholder={bridgePlatform === "linux" ? "/opt/ComfyUI" : "D:\\ComfyUI"}
+                                            onChange={(event) => update({ comfyInstallDir: event.target.value })}
+                                            onBlur={(event) => update({ comfyInstallDir: event.target.value.trim() })}
+                                        />
+                                        <Button icon={<FolderOpen className="size-3.5" />} loading={directoryPickerAction === "install"} disabled={!selectedBridge?.online || directoryPickerAction !== null} title={selectedBridge?.online ? "通过 Bridge 打开系统目录选择器" : "选择 Bridge 设备并确认在线后可使用"} onClick={() => void chooseComfyInstallDir()}>
+                                            选择
+                                        </Button>
+                                    </Space.Compact>
+                                </Form.Item>
+                                <Form.Item label="服务端口" className="mb-0">
+                                    <Input
+                                        inputMode="numeric"
+                                        value={String(config.comfyPort || 8188)}
+                                        onChange={(event) => update({ comfyPort: Number(event.target.value.replace(/\D/g, "")) || 8188 })}
+                                    />
+                                </Form.Item>
+                            </div>
+                            <div className="mt-3 flex flex-wrap items-center gap-2">
+                                <Button size="small" icon={<RefreshCw className="size-3.5" />} loading={comfyControlAction === "detect"} disabled={!selectedBridge || !selectedBridge.online} onClick={() => void runComfyControl("detect")}>
+                                    探测
+                                </Button>
+                                <Button size="small" type="primary" loading={comfyControlAction === "start"} disabled={!selectedBridge || !selectedBridge.online || comfyControlAction !== null} onClick={() => void runComfyControl("start")}>
+                                    启动 ComfyUI
+                                </Button>
+                                <Button size="small" danger loading={comfyControlAction === "stop"} disabled={!selectedBridge || !selectedBridge.online || comfyControlAction !== null} onClick={() => void runComfyControl("stop")}>
+                                    停止 ComfyUI
+                                </Button>
+                            </div>
+                            <p className="mt-2 text-xs text-foreground/60">
+                                {comfyControlResult
+                                    ? `状态：${comfyControlResult.comfyOnline ? "在线" : "离线"} · 地址：${comfyControlResult.comfyUrl || config.comfyUrl} · 安装类型：${comfyControlResult.installType || config.comfyInstallType || "auto"}${comfyControlResult.managed ? " · 由 Bridge 管理" : ""}`
+                                    : "填写安装信息后，Bridge 可自动探测端口；整合包可由 Bridge 启动，桌面版只提供启动与状态检测。"}
+                            </p>
                         </div>
                         <div className="mt-4 rounded-lg border border-border/60 bg-foreground/[0.03] p-3">
                             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -293,7 +448,7 @@ export function ComfyUIBridgeSettingsPane() {
                                     </Button>
                                 </div>
                             </div>
-                            <p className="mt-2 text-xs text-foreground/55">每位用户都要登录自己的账号、注册自己的 Bridge，再在能访问 ComfyUI 的机器执行命令。不要把 Bridge Token 发给其他人；修改地址或工作流目录后需复制新命令并重启。</p>
+                            <p className="mt-2 text-xs text-foreground/55">每位用户都要登录自己的账号、注册自己的 Bridge，再在能访问 ComfyUI 的机器执行命令。不要把 Bridge Token 发给其他人；目录选择器修改后会立即下发到在线 Bridge，重启 Bridge 时请复制最新启动命令。</p>
                         </div>
                         {bridgeToken ? (
                             <div className="mt-3 space-y-2">
@@ -357,13 +512,15 @@ export function ComfyUIBridgeSettingsPane() {
                             </Form.Item>
                             <Form.Item label="工作流用途" className="mb-0 lg:col-span-3">
                                 <Select
-                                    value={selectedCapability}
+                                    value={selectedCapabilities}
                                     options={[
                                         { label: "图片", value: "image" },
                                         { label: "视频", value: "video" },
                                         { label: "音频", value: "audio" },
                                     ]}
-                                    onChange={(capability) => updateWorkflowCapability(capability as ComfyBridgeConfig["capability"])}
+                                    mode="multiple"
+                                    maxTagCount={2}
+                                    onChange={(capabilities) => updateWorkflowCapabilities(capabilities as RunningHubCapability[])}
                                 />
                             </Form.Item>
                             <Form.Item label="工作流文件名" className="mb-0 lg:col-span-3">
@@ -431,7 +588,7 @@ export function ComfyUIBridgeSettingsPane() {
     );
 }
 
-function discoveredWorkflows(bridge: ComfyBridgeSummary | undefined, capability: ComfyBridgeConfig["capability"]): DiscoveredWorkflow[] {
+function discoveredWorkflows(bridge: ComfyBridgeSummary | undefined, fallbackCapability: RunningHubCapability): DiscoveredWorkflow[] {
     const value = bridge?.capabilities ? bridge.capabilities["workflows"] : undefined;
     if (!Array.isArray(value)) return [];
     return value.flatMap((item) => {
@@ -439,10 +596,14 @@ function discoveredWorkflows(bridge: ComfyBridgeSummary | undefined, capability:
         if (!item || typeof item !== "object") return [];
         const raw = item as Record<string, unknown>;
         const workflowId = String(raw.workflowId || raw.id || raw.fileName || "").trim();
-        const fields = normalizeWorkflowFieldMappings(raw.fields, capability);
+        const rawCapabilities = Array.isArray(raw.capabilities) ? raw.capabilities : raw.capability ? [raw.capability] : [];
+        const capabilities = rawCapabilities
+            .map((value) => (value === "image" || value === "video" || value === "audio" ? value : fallbackCapability))
+            .filter((value, index, all) => all.indexOf(value) === index);
+        const fields = normalizeWorkflowFieldMappings(raw.fields, capabilities.length === 1 ? capabilities[0] : undefined);
         const workflowJson = raw.workflowJson && typeof raw.workflowJson === "object" && !Array.isArray(raw.workflowJson) ? (raw.workflowJson as Record<string, unknown>) : undefined;
         const workflowGraph = raw.workflowGraph && typeof raw.workflowGraph === "object" && !Array.isArray(raw.workflowGraph) ? (raw.workflowGraph as WorkflowGraphPreview) : undefined;
-        return workflowId ? [{ workflowId, title: String(raw.title || raw.name || workflowId), fields, workflowJson, workflowGraph, format: raw.format === "api" ? "api" : "ui" }] : [];
+        return workflowId ? [{ workflowId, title: String(raw.title || raw.name || workflowId), capabilities, fields, workflowJson, workflowGraph, format: raw.format === "api" ? "api" : "ui" }] : [];
     });
 }
 

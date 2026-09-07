@@ -162,7 +162,8 @@ export function applyNodeConfigPatch(node: CanvasNodeData, patch: Partial<Canvas
     const nextPatch = resetGenerationParamsOnModelSwitch(node, safePatch);
     const next = { ...node, metadata: { ...node.metadata, ...nextPatch } };
     const spec = node.type === CanvasNodeType.Video ? NODE_DEFAULT_SIZE[CanvasNodeType.Video] : NODE_DEFAULT_SIZE[CanvasNodeType.Image];
-    const size = typeof safePatch.size === "string" && !node.metadata?.content ? nodeSizeFromRatio(safePatch.size, spec.width, spec.height) : null;
+    const ratio = typeof safePatch.size === "string" ? safePatch.size.match(/^(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)/)?.[0] : undefined;
+    const size = typeof ratio === "string" && !node.metadata?.content ? nodeSizeFromRatio(ratio, spec.width, spec.height) : null;
     return size && (node.type === CanvasNodeType.Image || node.type === CanvasNodeType.Video) ? { ...next, ...size, position: { x: node.position.x + node.width / 2 - size.width / 2, y: node.position.y + node.height / 2 - size.height / 2 } } : next;
 }
 
@@ -411,24 +412,40 @@ export function removeCanvasNodes(nodes: CanvasNodeData[], requestedIds: Set<str
     const nextNodes = remainingNodes.map((node) => {
         const detached = node.parentId && removedIds.has(node.parentId) ? { ...node, parentId: undefined } : node;
         const storyboard = detached.metadata?.storyboard;
-        const cleaned = storyboard
-            ? {
-                  ...detached,
-                  metadata: {
-                      ...detached.metadata,
-                      storyboard: {
-                          ...storyboard,
-                          referenceNodeIds: storyboard.referenceNodeIds.filter((id) => !removedIds.has(id)),
-                          rows: storyboard.rows.map((row) => ({
-                              ...row,
-                              assetBindings: (row.assetBindings || []).filter((binding) => !removedIds.has(binding.nodeId)),
-                              imageNodeId: row.imageNodeId && !removedIds.has(row.imageNodeId) ? row.imageNodeId : undefined,
-                              videoNodeId: row.videoNodeId && !removedIds.has(row.videoNodeId) ? row.videoNodeId : undefined,
-                          })),
-                      },
-                  },
-              }
-            : detached;
+        let cleaned = detached;
+        if (storyboard) {
+            cleaned = {
+                ...cleaned,
+                metadata: {
+                    ...cleaned.metadata,
+                    storyboard: {
+                        ...storyboard,
+                        referenceNodeIds: storyboard.referenceNodeIds.filter((id) => !removedIds.has(id)),
+                        rows: storyboard.rows.map((row) => ({
+                            ...row,
+                            assetBindings: (row.assetBindings || []).filter((binding) => !removedIds.has(binding.nodeId)),
+                            imageNodeId: row.imageNodeId && !removedIds.has(row.imageNodeId) ? row.imageNodeId : undefined,
+                            videoNodeId: row.videoNodeId && !removedIds.has(row.videoNodeId) ? row.videoNodeId : undefined,
+                        })),
+                    },
+                },
+            };
+        }
+        if (removedIds.has(cleaned.metadata?.videoStartFrameNodeId || "")
+            || removedIds.has(cleaned.metadata?.videoEndFrameNodeId || "")) {
+            cleaned = {
+                ...cleaned,
+                metadata: {
+                    ...cleaned.metadata,
+                    videoStartFrameNodeId: cleaned.metadata?.videoStartFrameNodeId && !removedIds.has(cleaned.metadata.videoStartFrameNodeId)
+                        ? cleaned.metadata.videoStartFrameNodeId
+                        : undefined,
+                    videoEndFrameNodeId: cleaned.metadata?.videoEndFrameNodeId && !removedIds.has(cleaned.metadata.videoEndFrameNodeId)
+                        ? cleaned.metadata.videoEndFrameNodeId
+                        : undefined,
+                },
+            };
+        }
         const childIds = cleaned.metadata?.batchChildIds?.filter((childId) => !removedIds.has(childId));
         if (!cleaned.metadata?.isBatchRoot || childIds?.length === cleaned.metadata.batchChildIds?.length) return cleaned;
         const primaryImageId = childIds?.includes(cleaned.metadata.primaryImageId || "") ? cleaned.metadata.primaryImageId : childIds?.[0];

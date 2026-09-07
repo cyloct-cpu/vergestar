@@ -1,4 +1,4 @@
-import { defaultModelCapabilityConfig, type ModelCapabilityConfig } from "@/lib/model-capabilities";
+import { defaultModelCapabilityConfig, inferVideoDurationRange, type ModelCapabilityConfig } from "@/lib/model-capabilities";
 import { modelProtocolCapability, protocolForModelCatalog, type ModelProtocol } from "@/lib/model-protocols";
 import type { ModelChannel } from "@/stores/use-config-store";
 
@@ -116,6 +116,10 @@ function hasCatalogCapabilityConfig(item: ChannelModelCatalogItem) {
     return Boolean(item.defaultParameters || item.options || item.supportsImages !== undefined || item.minImages !== undefined || item.maxImages !== undefined);
 }
 
+function clampDuration(range: { min: number; max: number; default: number }, value: number) {
+    return Math.min(range.max, Math.max(range.min, Math.floor(Number(value) || range.default)));
+}
+
 function catalogCapabilityConfig(item: ChannelModelCatalogItem, protocol: ModelProtocol | undefined, capability: "image" | "video", existing: ModelCapabilityConfig | undefined, isNew: boolean): ModelCapabilityConfig {
     const fallback = defaultModelCapabilityConfig(protocol, item.id);
     const existingProfile = capability === "image" ? existing?.image : existing?.video;
@@ -134,9 +138,20 @@ function catalogCapabilityConfig(item: ChannelModelCatalogItem, protocol: ModelP
     const durations = uniqueNumbers(optionValues(item.options?.durationSeconds));
     const defaultDuration = positiveNumber(item.defaultParameters?.durationSeconds);
     if (durations.length) {
-        video.duration = { selection: "enum", values: durations, default: durations.includes(defaultDuration) ? defaultDuration : durations[0]! };
+        // 供应商目录已经明确列出可选秒数时，它就是能力边界；
+        // 不能用普通模型的默认上限放大，避免请求供应商不支持的时长。
+        const min = Math.min(...durations);
+        const max = Math.max(...durations);
+        video.duration = {
+            selection: "range",
+            min,
+            max,
+            step: 1,
+            default: clampDuration({ min, max, default: max }, durations.includes(defaultDuration) ? defaultDuration : durations[0]!),
+        };
     } else if (defaultDuration > 0) {
-        video.duration = { selection: "enum", values: [defaultDuration], default: defaultDuration };
+        const fallbackRange = inferVideoDurationRange(protocol, item.id);
+        video.duration = { ...fallbackRange, default: clampDuration(fallbackRange, defaultDuration) };
     }
     const ratios = optionValues(item.options?.aspectRatio);
     const defaultRatio = item.defaultParameters?.aspectRatio?.trim() || "";

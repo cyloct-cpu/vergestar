@@ -6,6 +6,7 @@ import type { Asset } from "@/stores/use-asset-store";
 import { flushAssetStorePersistence, useAssetStore } from "@/stores/use-asset-store";
 import type { CanvasProject } from "@/stores/canvas/use-canvas-store";
 import { flushCanvasStorePersistence, useCanvasStore } from "@/stores/canvas/use-canvas-store";
+import type { CanvasConnection, CanvasNodeData } from "@/types/canvas";
 
 let activeRemoteUserId = "";
 type RemoteUserDataPhase = "inactive" | "hydrating" | "ready" | "failed";
@@ -21,6 +22,58 @@ let acknowledgedProjects = new Map<string, CanvasProject>();
 
 const LOCAL_STORAGE_KEY_PATTERN = /^(image|video|audio|file|video-reference|audio-reference):/;
 
+function carriesGenerationTask(node: CanvasNodeData) {
+    return Boolean(
+        node.metadata?.generationEffectKeys?.length ||
+            node.metadata?.taskId ||
+            node.metadata?.agentGenerationContinuation?.taskId ||
+            node.metadata?.status === "loading",
+    );
+}
+
+function preferLocalGenerationNode(node: CanvasNodeData) {
+    // Remote edits still win for nodes that already reached a terminal success state without an effect stamp.
+    if (node.metadata?.generationEffectKeys?.length) return true;
+    return Boolean(node.metadata?.taskId && node.metadata?.status !== "success") || node.metadata?.status === "loading";
+}
+
+function mergeHydratedCanvasProjects(remoteProjects: CanvasProject[], localProjects: CanvasProject[]) {
+    const localById = new Map(localProjects.map((project) => [project.id, project]));
+    const merged = remoteProjects.map((remoteProject) => {
+        const localProject = localById.get(remoteProject.id);
+        if (!localProject) return remoteProject;
+
+        const remoteNodes = new Map(remoteProject.nodes.map((node) => [node.id, node]));
+        const protectedLocalNodes = localProject.nodes.filter((node) => !remoteNodes.has(node.id) && carriesGenerationTask(node));
+        if (!protectedLocalNodes.length && !localProject.nodes.some((node) => remoteNodes.has(node.id) && preferLocalGenerationNode(node))) return remoteProject;
+
+        const nodes = remoteProject.nodes.map((node) => {
+            const localNode = localProject.nodes.find((item) => item.id === node.id);
+            return localNode && preferLocalGenerationNode(localNode) ? localNode : node;
+        });
+        for (const node of protectedLocalNodes) nodes.push(node);
+
+        const mergedNodeIds = new Set(nodes.map((node) => node.id));
+        const remoteConnections = new Set(remoteProject.connections.map((connection) => connection.id));
+        // A generated node often carries its prompt/reference connections in the newer local state only.
+        const protectedConnections: CanvasConnection[] = protectedLocalNodes
+            .flatMap((node) => localProject.connections.filter((connection) => (connection.fromNodeId === node.id || connection.toNodeId === node.id) && !remoteConnections.has(connection.id)))
+            .filter((connection) => mergedNodeIds.has(connection.fromNodeId) && mergedNodeIds.has(connection.toNodeId))
+            .filter((connection, index, list) => list.findIndex((item) => item.id === connection.id) === index);
+        return {
+            ...remoteProject,
+            nodes,
+            connections: [...remoteProject.connections, ...protectedConnections],
+        };
+    });
+
+    for (const localProject of localProjects) {
+        if (remoteProjects.some((project) => project.id === localProject.id)) continue;
+        if (localProject.nodes.some((node) => carriesGenerationTask(node))) merged.push(localProject);
+    }
+    return merged;
+}
+
 export async function syncRemoteUserData(userId?: string | null) {
     await withRemoteUserDataSyncExclusive(async () => {
         activeRemoteUserId = userId || "";
@@ -35,9 +88,9 @@ export async function syncRemoteUserData(userId?: string | null) {
             // 登录只拉一次聚合快照。摘要列表再逐条请求详情会把 N 条数据放大成 2N+2 个请求，
             // 并且会在登录阶段同时触发大量媒体解析，任何一项失败都会污染登录结果。
             const snapshot = await getRemoteUserDataSnapshot();
-            // 登录时服务端是实体真相。浏览器 IndexedDB 只作为首屏缓存，不能把服务端已删除的记录补回去。
-            // 这里只替换结构化记录，不在登录阶段解析图片/视频/音频 URL；媒体由实际使用方按需解析。
-            useCanvasStore.getState().replaceProjects(snapshot.projects);
+            // 服务端快照是实体基线，但快照可能在最后一次自动同步前生成。带任务凭证的本地
+            // 生成节点必须先并入基线，否则登录/刷新时会把刚完成的画布节点当作远端删除。
+            useCanvasStore.getState().replaceProjects(mergeHydratedCanvasProjects(snapshot.projects, useCanvasStore.getState().projects));
             useAssetStore.getState().replaceAssets(snapshot.assets);
             await Promise.all([flushCanvasStorePersistence(), flushAssetStorePersistence()]);
             acknowledgedProjects = new Map(snapshot.projects.map((project) => [project.id, project]));

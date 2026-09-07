@@ -89,7 +89,13 @@ function inferWorkflowFieldSource(fieldName: string, fieldType: string, capabili
     const key = fieldName.toLowerCase().replace(/[\s_-]/g, "");
     const normalizedFieldType = fieldType.trim().toLowerCase();
     if (["text", "prompt", "positive", "positiveprompt"].includes(key)) return "prompt";
-    if (key.includes("mask")) return "mask";
+    if (key.includes("mask") || key.includes("蒙版") || key.includes("遮罩")) return "mask";
+    // ComfyUI 模板常用中文 widget 名称；没有类型元数据时也必须识别为媒体槽位。
+    if (["图片", "图像", "参考图"].some((name) => key.includes(name)) || ["首帧", "尾帧", "起始帧", "结束帧"].some((name) => key.includes(name))) {
+        return "referenceImage";
+    }
+    if (key.includes("视频")) return "referenceVideo";
+    if (key.includes("音频") || key.includes("语音")) return "referenceAudio";
     const dimensionSource = workflowDimensionSource(key);
     if (dimensionSource) return dimensionSource;
     if (["ratio", "aspectratio", "imageaspectratio", "imageratio", "videoaspectratio", "videoratio"].includes(key)) return "aspectRatio";
@@ -113,8 +119,17 @@ function inferWorkflowFieldSource(fieldName: string, fieldType: string, capabili
 }
 
 function shouldRepairLegacyWorkflowSource(fieldName: string, source: string, inferredSource: string, capability?: RunningHubCapability) {
-    if (!source || !inferredSource || source === inferredSource) return false;
+    if (!inferredSource || source === inferredSource) return false;
     const key = fieldName.toLowerCase().replace(/[\s_-]/g, "");
+    // 已保存配置可能把新发现的中文媒体字段存成 source: ""。字段名本身能明确识别时，
+    // 不能让这个空值在 schema 合并时覆盖掉参考图/参考视频/参考音频绑定。
+    const explicitlyConfiguredEmptySource = source === "" && (
+        key.includes("图片") || key.includes("图像") || key.includes("参考图") ||
+        key.includes("首帧") || key.includes("尾帧") || key.includes("起始帧") || key.includes("结束帧") ||
+        key.includes("视频") || key.includes("音频") || key.includes("语音") ||
+        key.includes("蒙版") || key.includes("遮罩")
+    );
+    if (explicitlyConfiguredEmptySource) return true;
     const wasMistakenForMedia = ["referenceImage", "referenceVideo", "referenceAudio"].includes(source);
     if (wasMistakenForMedia && (workflowDimensionSource(key) || inferredSource === "aspectRatio" || inferredSource === "vquality")) return true;
     // 旧版把通用 resolution 固定识别为图片尺寸；视频条目必须恢复为视频清晰度。
@@ -194,16 +209,26 @@ export function normalizeWorkflowFieldMappings(value: unknown, capability?: Runn
         } as WorkflowFieldMapping;
         const safeToOverride = raw.safeToOverride !== false && raw.safe_to_override !== false && workflowFieldSafeToOverride(candidate);
         const role = workflowFieldRole({ ...candidate, role: String(raw.role || "") });
+        const isMediaSlot = ["referenceImage", "referenceVideo", "referenceAudio", "mask"].includes(source);
+        const normalizedRole = isMediaSlot ? "media" : role;
         const configuredEnabled = typeof raw.enabled === "boolean" ? raw.enabled : role !== "internal";
+        const isPromptSlot = source === "prompt" && safeToOverride && (required === true || configuredEnabled);
         const optionsSource = ["workflow", "manual", "preset"].includes(String(raw.optionsSource || raw.options_source || ""))
             ? String(raw.optionsSource || raw.options_source) as WorkflowFieldMapping["optionsSource"]
             : Array.isArray(options) ? "workflow" : undefined;
-        return [{ ...candidate, role, safeToOverride, enabled: safeToOverride && configuredEnabled, ...(optionsSource ? { optionsSource } : {}) }];
+        return [{
+            ...candidate,
+            role: normalizedRole,
+            safeToOverride,
+            enabled: safeToOverride && (isMediaSlot || isPromptSlot ? true : configuredEnabled),
+            ...(optionsSource ? { optionsSource } : {}),
+        }];
     });
+    const repairedFields = repairSystemUserPromptMappings(fields);
     let imageOrder = 0;
     let videoOrder = 0;
     let audioOrder = 0;
-    return fields.map((field) => {
+    return repairedFields.map((field) => {
         if (field.source === "referenceImage") {
             const configuredOrder = Number(field.imageOrder);
             const nextOrder = Number.isInteger(configuredOrder) && configuredOrder > 0 ? configuredOrder : imageOrder + 1;
@@ -227,12 +252,48 @@ export function normalizeWorkflowFieldMappings(value: unknown, capability?: Runn
     });
 }
 
+// 旧版自动识别会把测试提示词绑定到模板的 System Prompt。这里把绑定迁移到
+// 明确标注 User Prompt / 用户提示词 的字段，避免用户输入只替换生成规则。
+function repairSystemUserPromptMappings(fields: WorkflowFieldMapping[]) {
+    const promptIndexes = fields.reduce<number[]>((result, field, index) => {
+        if (field.source === "prompt") result.push(index);
+        return result;
+    }, []);
+    if (!promptIndexes.length) return fields;
+
+    const userIndexes = fields.reduce<number[]>((result, field, index) => {
+        const descriptor = `${field.fieldName} ${field.label || ""}`.toLowerCase();
+        if (descriptor.includes("userprompt") || descriptor.includes("user prompt") || field.label?.includes("用户提示词") || field.label?.includes("用户输入")) {
+            result.push(index);
+        }
+        return result;
+    }, []);
+    if (!userIndexes.length) return fields;
+
+    const systemPromptIndexes = promptIndexes.filter((index) => {
+        const field = fields[index];
+        const descriptor = `${field.fieldName} ${field.label || ""}`.toLowerCase();
+        return descriptor.includes("systemprompt") || descriptor.includes("system prompt") || field.label?.includes("系统提示词");
+    });
+    if (!systemPromptIndexes.length) return fields;
+
+    const next = [...fields];
+    const target = userIndexes.find((index) => !promptIndexes.includes(index));
+    if (target === undefined) return fields;
+    const source = systemPromptIndexes[0];
+    next[source] = { ...fields[source], source: "", sourceAutomatic: false, bindPrompt: false };
+    next[target] = { ...fields[target], source: "prompt", sourceAutomatic: true, required: fields[target].required ?? true };
+    return next;
+}
+
 export function mergeWorkflowFieldMappings(current: unknown, incoming: unknown, capability?: RunningHubCapability) {
     const previousFields = normalizeWorkflowFieldMappings(current, capability);
     const nextFields = normalizeWorkflowFieldMappings(incoming, capability);
     const previousByKey = new Map(previousFields.map((field) => [`${field.nodeId}::${field.fieldName}`, field]));
+    // label 由当前工作流 JSON 的节点标题推导，属于 schema 语义，不能被旧快照覆盖；
+    // 否则 H3 等把 duration 写在节点标题里的工作流会退回“由工作流控制”。
     const policyKeys: Array<keyof WorkflowFieldMapping> = [
-        "label", "enabled",
+        "enabled",
         "randomEnabled", "source", "sourceAutomatic", "sourceFromUpstream", "sourceIndex",
         "imageOrder", "required", "bindPrompt",
     ];
@@ -256,12 +317,23 @@ export function mergeWorkflowFieldMappings(current: unknown, incoming: unknown, 
         if (field.step === undefined && previous.step !== undefined) merged.step = previous.step;
         // 首次获得角色信息时采用服务端的内部参数默认值；之后才保留用户明确的启用选择。
         if (field.role === "internal" && previous.role !== "internal") merged.enabled = field.enabled;
+        // ComfyUI 媒体槽位是执行必需输入；历史数据里残留的 internal/disabled 状态不能让它被过滤。
+        const isPromptSlot = merged.source === "prompt" && merged.safeToOverride && merged.required !== false;
+        if (["referenceImage", "referenceVideo", "referenceAudio", "mask"].includes(merged.source || "")) {
+            merged.role = "media";
+            merged.enabled = true;
+        }
+        if (isPromptSlot) merged.enabled = true;
         if (field.safeToOverride === false) merged.enabled = false;
         return merged;
     });
 }
 
-function normalizeSavedWorkflowFields(workflow: { fields?: unknown; workflowJson?: Record<string, unknown> }, capability: RunningHubCapability) {
+export function normalizeSavedWorkflowFields(
+    workflow: { fields?: unknown; workflowJson?: Record<string, unknown> } | undefined,
+    capability?: RunningHubCapability,
+) {
+    if (!workflow) return [];
     const schemaFields = workflowVideoFieldsFromJson(workflow.workflowJson);
     return schemaFields.length
         ? mergeWorkflowFieldMappings(workflow.fields, schemaFields, capability)
@@ -312,7 +384,8 @@ export type RunningHubConfig = {
 export type ComfyBridgeWorkflow = {
     workflowId: string;
     title?: string;
-    capability: "image" | "video" | "audio";
+    capability?: RunningHubCapability;
+    capabilities: RunningHubCapability[];
     fields?: WorkflowFieldMapping[];
     workflowJson?: Record<string, unknown>;
     workflowGraph?: WorkflowGraphPreview;
@@ -327,9 +400,13 @@ export type ComfyBridgeConfig = {
     enabled: boolean;
     bridgeId: string;
     comfyUrl: string;
+    comfyInstallDir?: string;
+    comfyInstallType?: "auto" | "portable" | "desktop";
+    comfyPort?: number;
     workflowDir: string;
     workflowId: string;
-    capability: "image" | "video" | "audio";
+    capability: RunningHubCapability;
+    lastUsedWorkflows?: Partial<Record<RunningHubCapability, string>>;
     workflows: ComfyBridgeWorkflow[];
 };
 
@@ -430,7 +507,7 @@ export const defaultConfig: AiConfig = {
     // 创作端模型目录只能来自后台公开逻辑模型和用户自定义渠道，不能内置供应商模型。
     channels: [],
     runningHub: { enabled: false, baseUrl: "https://www.runninghub.cn", apiKey: "", walletApiKey: "", uploadApiKey: "", useWallet: false, capability: "image", selectedKind: "workflow", workflowId: "", workflows: [] },
-    comfyBridge: { enabled: false, bridgeId: "", comfyUrl: "http://127.0.0.1:8188", workflowDir: "D:\\ComfyUI\\workflows", workflowId: "", capability: "image", workflows: [] },
+    comfyBridge: { enabled: false, bridgeId: "", comfyUrl: "http://127.0.0.1:8188", comfyInstallDir: "", comfyInstallType: "auto", comfyPort: 8188, workflowDir: "D:\\ComfyUI\\workflows", workflowId: "", capability: "image", lastUsedWorkflows: {}, workflows: [] },
     taskWorkflowProvider: "model",
     model: "",
     imageModel: "",
@@ -660,15 +737,34 @@ export function normalizeConfigSnapshot(snapshot: ConfigStoreSnapshot | undefine
         : normalizeRunningHubWorkflowKind(runningHubWorkflows.find((item) => item.workflowId === runningHubWorkflowID)?.kind);
     const persistedComfyBridge = persistedConfig.comfyBridge;
     const comfyBridgeCapability = normalizeRunningHubCapability(persistedComfyBridge?.capability, defaultConfig.comfyBridge.capability);
+    const comfyBridgeInstallType: ComfyBridgeConfig["comfyInstallType"] = persistedComfyBridge?.comfyInstallType === "portable" || persistedComfyBridge?.comfyInstallType === "desktop"
+        ? persistedComfyBridge.comfyInstallType
+        : "auto";
+    const lastUsedWorkflows: Partial<Record<RunningHubCapability, string>> = {};
+    if (persistedComfyBridge?.lastUsedWorkflows && typeof persistedComfyBridge.lastUsedWorkflows === "object") {
+        for (const capability of ["image", "video", "audio"] as const) {
+            const workflowId = String(persistedComfyBridge.lastUsedWorkflows[capability] || "").trim();
+            if (workflowId) lastUsedWorkflows[capability] = workflowId;
+        }
+    }
     const comfyBridgeWorkflows = Array.isArray(persistedComfyBridge?.workflows)
         ? persistedComfyBridge.workflows
             .filter((item): item is ComfyBridgeWorkflow => Boolean(item && typeof item === "object" && String(item.workflowId || "").trim()))
             .map((item) => {
-                const capability = normalizeRunningHubCapability(item.capability, comfyBridgeCapability);
+                const discoveredCapabilities = Array.isArray(item.capabilities)
+                    ? item.capabilities.map((value) => normalizeRunningHubCapability(value)).filter(Boolean)
+                    : [];
+                const legacyCapability = normalizeRunningHubCapability(item.capability, comfyBridgeCapability);
+                const capabilities = discoveredCapabilities.length
+                    ? [...new Set(discoveredCapabilities)]
+                    : [legacyCapability];
+                // 多用途工作流不做单一能力推断，避免多输出条目的分辨率字段被错误修正。
+                const capability = capabilities.length === 1 ? capabilities[0] : undefined;
                 return {
                     ...item,
                     workflowId: String(item.workflowId || "").trim(),
-                    capability,
+                    capability: capabilities[0],
+                    capabilities,
                     fields: normalizeSavedWorkflowFields(item, capability),
                 };
             })
@@ -690,6 +786,10 @@ export function normalizeConfigSnapshot(snapshot: ConfigStoreSnapshot | undefine
             ...(persistedComfyBridge || {}),
             capability: comfyBridgeCapability,
             workflowId: String(persistedComfyBridge?.workflowId || "").trim(),
+            comfyInstallDir: String(persistedComfyBridge?.comfyInstallDir || "").trim(),
+            comfyInstallType: comfyBridgeInstallType,
+            comfyPort: Number(persistedComfyBridge?.comfyPort || defaultConfig.comfyBridge.comfyPort),
+            lastUsedWorkflows,
             workflows: comfyBridgeWorkflows,
         },
     };

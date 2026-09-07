@@ -356,6 +356,41 @@ export function reconcileCanvasGenerationFailure(scope: string, durableProjects:
     });
 }
 
+// React 的批量更新可能让 generation executor 拿到旧 nodes 数组。这里专门用于生成过程回写：
+// durable 中已确认的 generation effect 不能被旧快照解释成用户删除。
+export function updateProjectNodesPreservingGenerationCommits(scope: string, projectId: string, nodes: CanvasNodeData[]) {
+    const durableProject = observedCanvasPersists.get(scope)?.projects.find((project) => project.id === projectId);
+    const durableGenerationNodes = (durableProject?.nodes || []).filter((node) => node.metadata?.generationEffectKeys?.length);
+    if (!durableGenerationNodes.length) {
+        useCanvasStore.getState().updateProject(projectId, { nodes });
+        return;
+    }
+
+    const currentById = new Map(nodes.map((node) => [node.id, node]));
+    const nextNodes = [...nodes];
+    for (const durableNode of durableGenerationNodes) {
+        const currentNode = currentById.get(durableNode.id);
+        if (!currentNode) {
+            nextNodes.push(durableNode);
+            continue;
+        }
+        const effectKeys = durableNode.metadata?.generationEffectKeys || [];
+        const currentKeys = currentNode.metadata?.generationEffectKeys || [];
+        if (effectKeys.some((key) => currentKeys.includes(key))) continue;
+        const mergedIndex = nextNodes.findIndex((node) => node.id === durableNode.id);
+        if (mergedIndex < 0) continue;
+        nextNodes[mergedIndex] = {
+            ...currentNode,
+            metadata: {
+                ...(currentNode.metadata || {}),
+                ...(durableNode.metadata || {}),
+                generationEffectKeys: [...effectKeys],
+            },
+        };
+    }
+    useCanvasStore.getState().updateProject(projectId, { nodes: nextNodes });
+}
+
 const canvasStorage: PersistStorage<CanvasStore> = {
     getItem: async (name) => {
         const scope = getActiveUserScope();

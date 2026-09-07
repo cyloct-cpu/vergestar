@@ -317,6 +317,13 @@ describe("画布连线能力", () => {
         expect(canvasConnectionError(config, nodes, [], { fromNodeId: "video", toNodeId: "target" })).toContain("不能连接参考视频");
     });
 
+    test("ComfyUI 工作流媒体节点跳过普通模型容量限制", () => {
+        const config = policyConfig();
+        const bridgeImage = { ...node("bridge-image", CanvasNodeType.Image), metadata: { workflowProvider: "comfyui" as const, comfyBridgeWorkflowId: "workflow" } };
+        const nodes = [node("video", CanvasNodeType.Video), bridgeImage];
+        expect(canvasConnectionError(config, nodes, [], { fromNodeId: "video", toNodeId: "bridge-image" })).toBe("");
+    });
+
     test("单个角色卡可以连接到音频生成节点", () => {
         const config = policyConfig();
         const character = { ...node("character", CanvasNodeType.Image), metadata: { workflowKind: "character" as const, characterAssetId: "character-asset" } };

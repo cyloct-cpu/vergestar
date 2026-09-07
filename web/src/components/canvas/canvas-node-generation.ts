@@ -66,6 +66,7 @@ export type NodeGenerationInput = {
 export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[], prompt: string, assets: Asset[], promptOnly = false): NodeGenerationContext {
     const connectedInputs = buildNodeGenerationInputs(nodeId, nodes, connections);
     const sourceNode = nodes.find((node) => node.id === nodeId);
+    assertConnectedFrameReferences(sourceNode, connectedInputs);
     const portraitTextureInput = sourceNode?.type === CanvasNodeType.Image && sourceNode.metadata?.content && sourceNode.metadata?.portraitTexture
         ? (() => {
               const image = readReferenceImage(sourceNode, nodes, connections);
@@ -85,7 +86,6 @@ export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData
         return buildComposerGenerationContext(
             mentionInputs,
             prompt,
-            // 工作流节点由字段映射接收全部连线媒体；视频节点的历史首尾帧字段不能再额外追加参考图。
             autoIncludeWorkflowMedia || (promptOnly && hasConnectedMedia) ? [] : [sourceNode?.metadata?.videoStartFrameNodeId, sourceNode?.metadata?.videoEndFrameNodeId].filter((id): id is string => Boolean(id)),
             promptOnly,
             autoIncludeWorkflowMedia || (promptOnly && hasConnectedMedia),
@@ -104,7 +104,6 @@ export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData
     const referenceImages = connectedInputs.map((input) => input.image).filter((image): image is ReferenceImage => Boolean(image));
     const referenceVideos = connectedInputs.map((input) => input.video).filter((video): video is ReferenceVideo => Boolean(video));
     const referenceAudios = connectedInputs.map((input) => input.audio).filter((audio): audio is ReferenceAudio => Boolean(audio));
-
     return {
         prompt: promptOnly ? prompt : upstreamText ? `${basePrompt}\n\n${upstreamText}` : basePrompt,
         referenceImages,
@@ -118,6 +117,18 @@ export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData
         videoCount: referenceVideos.length,
         audioCount: referenceAudios.length,
     };
+}
+
+function assertConnectedFrameReferences(sourceNode: CanvasNodeData | undefined, connectedInputs: NodeGenerationInput[]) {
+    const connectedNodeIds = new Set<string>(connectedInputs.map((input) => input.nodeId));
+    const configured = [
+        { label: "首帧参考图", id: sourceNode?.metadata?.videoStartFrameNodeId },
+        { label: "尾帧参考图", id: sourceNode?.metadata?.videoEndFrameNodeId },
+    ];
+    const missing = configured
+        .filter((item) => Boolean(item.id) && !connectedNodeIds.has(item.id || ""))
+        .map((item) => `${item.label}已不存在或未连接，请重新连接后再生成`);
+    if (missing.length) throw new Error(missing.join("；"));
 }
 
 function removeTrailingInputBlocks(prompt: string, inputs: NodeGenerationInput[]) {

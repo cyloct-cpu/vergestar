@@ -1,16 +1,20 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { ArrowUp, AtSign, Boxes, ChevronDown, FileText, ImageIcon, ImagePlus, LoaderCircle, Maximize2, Music2, Pencil, SlidersHorizontal, UserRound, Video, WandSparkles, X } from "lucide-react";
-import { Button, Image as AntImage, InputNumber, Modal, Tooltip } from "antd";
+import { ArrowUp, AtSign, Boxes, Check, ChevronDown, FileText, ImageIcon, ImagePlus, LoaderCircle, Maximize2, Music2, Pencil, SlidersHorizontal, UserRound, Video, WandSparkles, X } from "lucide-react";
+import { Button, Image as AntImage, InputNumber, Modal, Popover, Tooltip } from "antd";
 
-import { ModelPicker } from "@/components/model-picker";
-import { defaultConfig, modelOptionName, resolveModelChannel, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
+import { ModelIcon, ModelPicker } from "@/components/model-picker";
+import { defaultConfig, modelOptionName, normalizeSavedWorkflowFields, PUBLIC_MODEL_CATALOG_ID, resolveModelChannel, selectableModelsByCapability, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { resolveCanvasGenerationModel } from "@/lib/canvas/canvas-project-generation";
+import { resolveCanvasWorkflowProvider } from "@/lib/canvas/canvas-workflow";
+import { comfyBridgeWorkflowSupports, type ComfyBridgeWorkflowLike } from "@/lib/comfy-bridge-workflows";
+import { workflowProviderPluginEnabled } from "@/lib/plugins/builtin/workflows";
 import { CreditSymbol, requestCreditCost } from "@/constant/credits";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { modelQuoteRequest } from "@/lib/model-pricing";
 import { normalizeVideoDuration, normalizeVideoResolution } from "@/lib/video-generation-options";
-import { modelRequestOptions, resolveCompatibleModel, resolveModelGenerationDefaults, defaultImageParamsForModel, type ModelRequirements } from "@/lib/model-selection";
+import { configuredModelDisplayName, groupModelsByDisplayName, modelRequestOptions, resolveCompatibleModel, resolveModelGenerationDefaults, defaultImageParamsForModel, type ModelRequirements } from "@/lib/model-selection";
 import { navigateToSettings } from "@/lib/settings-navigation";
+import { cn } from "@/lib/utils";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { useUserStore } from "@/stores/use-user-store";
 import { CanvasImageSettingsPopover } from "./canvas-image-settings-popover";
@@ -63,6 +67,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
     const creditsEnabled = useUserStore((state) => state.features.creditsEnabled);
     const promptOptimizerInstallation = usePluginStore((state) => state.installations.find((item) => item.manifest.id === PROMPT_OPTIMIZER_PLUGIN_ID));
     const promptOptimizerEnabled = usePluginStore((state) => state.pluginStates[PROMPT_OPTIMIZER_PLUGIN_ID]?.effectiveEnabled ?? Boolean(state.installations.find((item) => item.manifest.id === PROMPT_OPTIMIZER_PLUGIN_ID)?.enabled));
+    const runtimeStatuses = usePluginStore((state) => state.runtimeStatuses);
     const simpleMode = workspaceMode === "simple";
     const mode = defaultMode(node.type);
     const hasTextContent = node.type === CanvasNodeType.Text && Boolean(node.metadata?.content?.trim());
@@ -107,6 +112,46 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
         }, mode),
     };
     const config = buildNodeConfig(globalConfig, node, mode, requirements);
+    const comfyBridgeWorkflowId = node.metadata?.comfyBridgeWorkflowId?.trim() || "";
+    const isComfyBridgeNode = mode !== "text"
+        && resolveCanvasWorkflowProvider(node.metadata) === "comfyui"
+        && Boolean(comfyBridgeWorkflowId);
+    const comfyBridgeWorkflow = isComfyBridgeNode
+        ? globalConfig.comfyBridge.workflows.find((item) => item.workflowId.trim() === comfyBridgeWorkflowId)
+        : undefined;
+    const comfyBridgeReady = isComfyBridgeNode
+        && workflowProviderPluginEnabled(runtimeStatuses, "comfyui")
+        && globalConfig.comfyBridge.enabled
+        && Boolean(globalConfig.comfyBridge.bridgeId.trim())
+        && Boolean(comfyBridgeWorkflow);
+    const comfyBridgeWorkflowStatus = mode !== "text" && resolveCanvasWorkflowProvider(node.metadata) === "comfyui"
+        ? !comfyBridgeWorkflow
+            ? "工作流不存在，请刷新 Bridge 工作流"
+            : !workflowProviderPluginEnabled(runtimeStatuses, "comfyui")
+                ? "ComfyUI Bridge 工作流插件未启用"
+                : !globalConfig.comfyBridge.enabled
+                    ? "ComfyUI Bridge 未启用，请在设置中开启"
+                    : !globalConfig.comfyBridge.bridgeId.trim()
+                        ? "ComfyUI Bridge 离线，请启动 Bridge 后刷新"
+                        : !comfyBridgeWorkflowSupports(comfyBridgeWorkflow, mode)
+                            ? "当前工作流不支持此节点类型"
+                            : ""
+        : "";
+    const comfyBridgeWorkflowLabel = comfyBridgeWorkflow?.title?.trim()
+        || node.metadata?.workflowTitle?.trim()
+        || comfyBridgeWorkflowId
+        || "ComfyUI 工作流";
+    const selectedWorkflowFields = comfyBridgeWorkflow ? normalizeSavedWorkflowFields(comfyBridgeWorkflow, mode === "video" ? "video" : mode === "audio" ? "audio" : "image") : [];
+    const selectableBridgeWorkflows = mode === "image" || mode === "video" || mode === "audio"
+        ? globalConfig.comfyBridge.workflows
+            .filter((workflow) => workflowProviderPluginEnabled(runtimeStatuses, "comfyui") && comfyBridgeWorkflowSupports(workflow, mode))
+            .sort((left, right) => (left.title || left.workflowId).localeCompare(right.title || right.workflowId, "zh-Hans-CN"))
+        : [];
+    const bridgeWorkflowOptions = selectableBridgeWorkflows.map((workflow) => ({
+        workflow,
+        label: workflow.title?.trim() || workflow.workflowId,
+        summary: "ComfyUI 工作流",
+    }));
     const promptOptimizerProvider = useMemo(() => {
         if (!promptOptimizerEnabled || !promptOptimizerInstallation || !promptOptimizerPlugin.createPromptOptimizer) return null;
         return promptOptimizerPlugin.createPromptOptimizer(createPluginHostContext(promptOptimizerPlugin, promptOptimizerInstallation, globalConfig));
@@ -227,6 +272,34 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
         }
     };
 
+    const selectGenerationSourceModel = (model: string) => {
+        onConfigChange(node.id, mode === "image"
+            ? {
+                model,
+                workflowProvider: "model",
+                workflowTitle: undefined,
+                comfyBridgeWorkflowId: undefined,
+                workflowParameters: {},
+                ...defaultImageParamsForModel(config, model),
+            }
+            : {
+                model,
+                workflowProvider: "model",
+                workflowTitle: undefined,
+                comfyBridgeWorkflowId: undefined,
+                workflowParameters: {},
+            });
+    };
+
+    const selectComfyBridgeWorkflow = (workflow: ComfyBridgeWorkflowLike) => {
+        onConfigChange(node.id, {
+            workflowProvider: "comfyui",
+            comfyBridgeWorkflowId: workflow.workflowId,
+            workflowTitle: workflow.title?.trim() || workflow.workflowId,
+            workflowParameters: {},
+        });
+    };
+
     const renderComposerHeader = (expanded: boolean) => (
         <div
             className="canvas-node-composer-header cursor-grab select-none active:cursor-grabbing"
@@ -295,7 +368,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
     );
 
     const renderSubmitButton = (expanded: boolean) => {
-        const showCost = creditsEnabled && credits !== null;
+        const showCost = creditsEnabled && credits !== null && !isComfyBridgeNode;
         const formattedCredits = credits?.toLocaleString("zh-CN", { maximumFractionDigits: 6 });
         const actionLabel = isRunning ? "生成中" : showCost ? `预计消耗 ${formattedCredits} 积分，生成` : "生成";
         return (
@@ -338,18 +411,34 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
         ) : (
             <div className="canvas-node-composer-footer">
                 <div className={expanded ? "min-w-0 flex-1" : "canvas-node-composer-model"}>
-                    <ModelPicker
-                        className="!h-7 !w-full !min-w-0 !text-[var(--fs-tiny)] !font-normal [&_img]:!size-3 [&_.lucide]:!size-3"
-                        fullWidth
+                    <GenerationSourcePicker
+                        modelPicker={
+                            <ModelPicker
+                                className="!h-7 !w-full !min-w-0 !text-[var(--fs-tiny)] !font-normal [&_img]:!size-3 [&_.lucide]:!size-3"
+                                fullWidth
+                                config={config}
+                                value={config.model}
+                                onChange={selectGenerationSourceModel}
+                                capability={mode}
+                                requirements={requirements}
+                                onMissingConfig={() => navigateToSettings({ continueCreation: true })}
+                                showSelectedPrice={false}
+                                variant="creation"
+                                showConfiguredModelName
+                            />
+                        }
                         config={config}
-                        value={config.model}
-                        onChange={(model) => onConfigChange(node.id, mode === "image" ? { model, ...defaultImageParamsForModel(config, model) } : { model })}
-                        capability={mode}
-                        requirements={requirements}
-                        onMissingConfig={() => navigateToSettings({ continueCreation: true })}
-                        showSelectedPrice={false}
-                        variant="creation"
-                        showConfiguredModelName
+                        mode={mode}
+                        currentModel={config.model}
+                        currentWorkflow={isComfyBridgeNode ? comfyBridgeWorkflow : undefined}
+                        currentWorkflowLabel={comfyBridgeWorkflowLabel}
+                        workflowStatus={comfyBridgeWorkflowStatus || undefined}
+                        workflowPluginEnabled={workflowProviderPluginEnabled(runtimeStatuses, "comfyui")}
+                        workflows={bridgeWorkflowOptions}
+                        onSelectModel={selectGenerationSourceModel}
+                        onSelectWorkflow={selectComfyBridgeWorkflow}
+                        onOpenComfySettings={() => navigateToSettings({ section: "comfyui" })}
+                        modelFallbackLabel={configuredModelDisplayName(config, config.model) || "选择模型"}
                     />
                 </div>
                 <div className="ml-auto flex min-w-0 shrink-0 items-center gap-1">
@@ -368,6 +457,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                     ) : mode === "image" ? (
                         <CanvasImageSettingsPopover
                             config={config}
+                            workflowFields={isComfyBridgeNode ? selectedWorkflowFields : []}
                             placement={expanded ? "topRight" : "topLeft"}
                             buttonClassName="canvas-node-composer-settings-trigger [&>span]:min-w-0 [&_.lucide]:!size-3"
                             onConfigChange={(key, value) => onConfigChange(node.id, key === "count" ? { count: Number(value) || 1 } : { [key]: value })}
@@ -377,6 +467,7 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                     ) : mode === "video" ? (
                         <CanvasVideoSettingsPopover
                             config={config}
+                            workflowFields={isComfyBridgeNode ? selectedWorkflowFields : []}
                             buttonClassName="canvas-node-composer-settings-trigger [&>span]:min-w-0 [&_.lucide]:!size-3"
                             onConfigChange={(key, value) => onConfigChange(node.id, videoConfigPatch(key, value))}
                         />
@@ -514,6 +605,205 @@ function ComposerPill({ theme, icon, label }: { theme: CanvasTheme; icon: ReactN
             {icon}
             {label}
         </span>
+    );
+}
+
+type GenerationSourcePickerProps = {
+    modelPicker: ReactNode;
+    config: AiConfig;
+    mode: CanvasNodeGenerationMode;
+    currentModel: string;
+    currentWorkflow?: ComfyBridgeWorkflowLike;
+    currentWorkflowLabel: string;
+    workflowStatus?: string;
+    workflowPluginEnabled: boolean;
+    workflows: Array<{ workflow: ComfyBridgeWorkflowLike; label: string; summary: string }>;
+    onSelectModel: (model: string) => void;
+    onSelectWorkflow: (workflow: ComfyBridgeWorkflowLike) => void;
+    onOpenComfySettings: () => void;
+    modelFallbackLabel: string;
+};
+
+function GenerationSourcePicker({
+    modelPicker,
+    config,
+    mode,
+    currentModel,
+    currentWorkflow,
+    currentWorkflowLabel,
+    workflowStatus,
+    workflowPluginEnabled,
+    workflows,
+    onSelectModel,
+    onSelectWorkflow,
+    onOpenComfySettings,
+    modelFallbackLabel,
+}: GenerationSourcePickerProps) {
+    const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const [open, setOpen] = useState(false);
+    const bridgeProblem = workflowPluginEnabled && !config.comfyBridge.enabled
+        ? "ComfyUI Bridge 未启用，请在设置中开启"
+        : !config.comfyBridge.bridgeId.trim()
+            ? "ComfyUI Bridge 离线，请启动 Bridge 后刷新"
+            : "";
+    const showPicker = mode !== "text" && (workflows.length > 0 || Boolean(currentWorkflow) || Boolean(bridgeProblem));
+    if (!showPicker) return <>{modelPicker}</>;
+
+    const selectedModel = currentModel || "";
+    const workflowActive = Boolean(currentWorkflow);
+    const selectableModels = Array.from(new Set(selectableModelsByCapability(config, mode).filter(Boolean)));
+    const modelGroups = config.channels
+        .map((channel) => ({
+            key: channel.id,
+            label: channel.name || "未命名渠道",
+            scope: channel.id === PUBLIC_MODEL_CATALOG_ID ? "" : channel.scope === "system" ? "平台服务" : "我的模型",
+            models: groupModelsByDisplayName(config, selectableModels.filter((model) => resolveModelChannel(config, model).id === channel.id)),
+        }))
+        .filter((group) => group.models.length);
+    return (
+        <Popover
+            open={open}
+            onOpenChange={setOpen}
+            trigger="click"
+            placement="bottomLeft"
+            arrow={false}
+            classNames={{
+                root: "canvas-model-picker-popover creation-model-picker-popover",
+                container: "canvas-composer-popover-surface creation-model-picker-surface",
+                content: "canvas-composer-popover-content",
+            }}
+            content={
+                <div
+                    className="canvas-model-picker-menu creation-model-picker-menu w-[360px] max-w-[calc(100vw-24px)]"
+                    style={{ background: theme.node.panel, color: theme.node.text }}
+                    role="listbox"
+                    aria-label="选择生成来源"
+                    onMouseDown={(event) => event.stopPropagation()}
+                    onPointerDown={(event) => event.stopPropagation()}
+                >
+                    <div className="creation-model-picker-heading">
+                        <span>生成来源</span>
+                        <strong>{workflowActive ? currentWorkflowLabel : configuredModelDisplayName(config, selectedModel) || modelFallbackLabel}</strong>
+                    </div>
+                    {bridgeProblem ? (
+                        <div className="canvas-model-picker-empty" style={{ color: theme.node.muted }}>
+                            {bridgeProblem}
+                            <button
+                                type="button"
+                                className="mt-2 inline-flex h-7 items-center rounded-md px-2 text-[var(--fs-tiny)] font-medium"
+                                style={{ background: theme.toolbar.itemHover, color: theme.node.text }}
+                                onClick={() => {
+                                    setOpen(false);
+                                    onOpenComfySettings();
+                                }}
+                            >
+                                打开 ComfyUI 设置
+                            </button>
+                        </div>
+                    ) : null}
+                    {workflows.length ? (
+                        <section className="canvas-model-picker-group min-w-0 overflow-hidden">
+                            <div className="canvas-model-picker-group-label" style={{ color: theme.node.muted }}>
+                                <span className="truncate">ComfyUI Bridge 工作流</span>
+                            </div>
+                            <div className="grid min-w-0 gap-1">
+                                {workflows.map((item) => {
+                                    const selected = workflowActive && currentWorkflow?.workflowId.trim() === item.workflow.workflowId.trim();
+                                    return (
+                                        <button
+                                            key={item.workflow.workflowId}
+                                            type="button"
+                                            role="option"
+                                            aria-selected={selected}
+                                            title={item.label}
+                                            className="canvas-model-picker-option"
+                                            style={{ background: selected ? theme.toolbar.activeBg : "transparent", color: theme.node.text }}
+                                            onClick={() => {
+                                                onSelectWorkflow(item.workflow);
+                                                setOpen(false);
+                                            }}
+                                        >
+                                            <span className="flex min-w-0 items-center gap-1.5">
+                                                <span className="grid size-6 shrink-0 place-items-center rounded-md" style={{ background: theme.toolbar.itemHover }}>
+                                                    <Boxes className="size-3" />
+                                                </span>
+                                                <span className="min-w-0 overflow-hidden">
+                                                    <span className="block truncate text-[var(--fs-label)] font-medium leading-none">{item.label}</span>
+                                                    <span className="mt-1 block truncate text-[var(--fs-tiny)]" style={{ color: theme.node.muted }}>{item.summary}</span>
+                                                </span>
+                                            </span>
+                                            {selected ? <Check className="canvas-model-picker-option-check" style={{ color: theme.node.activeStroke }} /> : null}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </section>
+                    ) : null}
+                    {modelGroups.map((group) => (
+                        <section key={group.key} className="canvas-model-picker-group min-w-0 overflow-hidden">
+                            <div className="canvas-model-picker-group-label" style={{ color: theme.node.muted }}>
+                                <span className="truncate">{group.label}</span>
+                                {group.scope ? <span className="shrink-0" style={{ color: theme.node.muted }}>{group.scope}</span> : null}
+                            </div>
+                            <div className="grid min-w-0 gap-1">
+                                {group.models.map((modelGroup) => {
+                                    const selected = !workflowActive && modelGroup.models.includes(selectedModel);
+                                    const model = selected ? selectedModel : modelGroup.models[0];
+                                    const channel = resolveModelChannel(config, model);
+                                    return (
+                                        <button
+                                            key={modelGroup.key}
+                                            type="button"
+                                            role="option"
+                                            aria-selected={selected}
+                                            title={`${configuredModelDisplayName(config, model)}（${channel.name || "未命名渠道"}）`}
+                                            className="canvas-model-picker-option"
+                                            style={{ background: selected ? theme.toolbar.activeBg : "transparent", color: theme.node.text }}
+                                            onClick={() => {
+                                                onSelectModel(model);
+                                                setOpen(false);
+                                            }}
+                                        >
+                                            <span className="flex min-w-0 items-center gap-1.5">
+                                                <span className="grid size-6 shrink-0 place-items-center rounded-md" style={{ background: theme.toolbar.itemHover }}>
+                                                    <ModelIcon config={config} model={model} />
+                                                </span>
+                                                <span className="min-w-0 overflow-hidden">
+                                                    <span className="block truncate text-[var(--fs-label)] font-medium leading-none">{configuredModelDisplayName(config, model)}</span>
+                                                    <span className="mt-1 block truncate text-[var(--fs-tiny)]" style={{ color: theme.node.muted }}>{channel.name || "未命名渠道"}</span>
+                                                </span>
+                                            </span>
+                                            {selected ? <Check className="canvas-model-picker-option-check" style={{ color: theme.node.activeStroke }} /> : null}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </section>
+                    ))}
+                </div>
+            }
+        >
+            <button
+                type="button"
+                className="canvas-composer-model-picker !h-7 !w-full !min-w-0 !text-[var(--fs-tiny)] !font-normal [&_img]:!size-3 [&_.lucide]:!size-3"
+                aria-haspopup="listbox"
+                aria-expanded={open}
+                aria-label="选择生成来源"
+                title={workflowStatus || (workflowActive ? currentWorkflowLabel : configuredModelDisplayName(config, selectedModel) || modelFallbackLabel)}
+            >
+                <span className="canvas-model-picker-label flex min-w-0 items-center gap-1.5">
+                    <span className="canvas-model-picker-trigger-icon" style={{ background: theme.toolbar.itemHover }}>
+                        {workflowActive ? <Boxes className="size-3" /> : <ModelIcon config={config} model={selectedModel} />}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate">
+                        {workflowActive
+                            ? currentWorkflowLabel
+                            : configuredModelDisplayName(config, selectedModel) || modelFallbackLabel}
+                    </span>
+                </span>
+                <ChevronDown className={cn("canvas-model-picker-chevron", open && "is-open")} aria-hidden="true" />
+            </button>
+        </Popover>
     );
 }
 
@@ -705,6 +995,11 @@ function buildNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode: Can
     const fallbackModel = mode === "image" ? defaultConfig.imageModel : mode === "video" ? defaultConfig.videoModel : mode === "audio" ? defaultConfig.audioModel : defaultConfig.textModel;
     const preferredModel = resolveCanvasGenerationModel(globalConfig, node.metadata?.model, mode) || resolveCanvasGenerationModel(globalConfig, defaultModel, mode) || fallbackModel;
     const model = resolveCompatibleModel(globalConfig, preferredModel, mode === "image" ? { ...requirements, imageSize: node.metadata?.size || globalConfig.size || defaultConfig.size } : requirements) || preferredModel;
+    // Bridge 工作流的能力来自所选工作流，而不是普通模型协议。视频面板已经
+    // 按工作流字段校验值，这里不能再用普通模型默认值覆盖节点上的选择。
+    const isComfyBridgeVideo = mode === "video"
+        && resolveCanvasWorkflowProvider(node.metadata) === "comfyui"
+        && Boolean(node.metadata?.comfyBridgeWorkflowId?.trim());
     const defaults = resolveModelGenerationDefaults(
         globalConfig,
         model,
@@ -713,6 +1008,7 @@ function buildNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode: Can
             ? {
                   size: node.metadata?.size,
                   quality: node.metadata?.quality,
+                  vquality: node.metadata?.vquality,
                   transparentBackground: node.metadata?.transparentBackground,
                   count: String(node.metadata?.count || globalConfig.canvasImageCount || globalConfig.count || defaultConfig.count),
               }
@@ -738,12 +1034,22 @@ function buildNodeConfig(globalConfig: AiConfig, node: CanvasNodeData, mode: Can
         ...globalConfig,
         model,
         quality: defaults.quality || globalConfig.quality || defaultConfig.quality,
-        size: defaults.size ?? globalConfig.size ?? defaultConfig.size,
         transparentBackground: defaults.transparentBackground || "false",
-        videoSeconds: defaults.videoSeconds || normalizeVideoDuration(globalConfig.videoSeconds || defaultConfig.videoSeconds),
-        vquality: defaults.vquality ?? normalizeVideoResolution(globalConfig.vquality || defaultConfig.vquality),
-        videoGenerateAudio: defaults.videoGenerateAudio || globalConfig.videoGenerateAudio || defaultConfig.videoGenerateAudio,
-        videoWatermark: defaults.videoWatermark || globalConfig.videoWatermark || defaultConfig.videoWatermark,
+        videoSeconds: isComfyBridgeVideo
+            ? String(node.metadata?.seconds || globalConfig.videoSeconds || defaultConfig.videoSeconds)
+            : defaults.videoSeconds || normalizeVideoDuration(globalConfig.videoSeconds || defaultConfig.videoSeconds),
+        size: isComfyBridgeVideo
+            ? (node.metadata?.size || globalConfig.size || defaultConfig.size)
+            : (defaults.size ?? globalConfig.size ?? defaultConfig.size),
+        vquality: isComfyBridgeVideo
+            ? String(node.metadata?.vquality || globalConfig.vquality || defaultConfig.vquality)
+            : (defaults.vquality ?? normalizeVideoResolution(globalConfig.vquality || defaultConfig.vquality)),
+        videoGenerateAudio: isComfyBridgeVideo
+            ? String(node.metadata?.generateAudio || globalConfig.videoGenerateAudio || defaultConfig.videoGenerateAudio)
+            : (defaults.videoGenerateAudio || globalConfig.videoGenerateAudio || defaultConfig.videoGenerateAudio),
+        videoWatermark: isComfyBridgeVideo
+            ? String(node.metadata?.watermark || globalConfig.videoWatermark || defaultConfig.videoWatermark)
+            : (defaults.videoWatermark || globalConfig.videoWatermark || defaultConfig.videoWatermark),
         audioVoice: node.metadata?.audioVoice || globalConfig.audioVoice || defaultConfig.audioVoice,
         audioFormat: node.metadata?.audioFormat || globalConfig.audioFormat || defaultConfig.audioFormat,
         audioSpeed: node.metadata?.audioSpeed || globalConfig.audioSpeed || defaultConfig.audioSpeed,
@@ -773,3 +1079,6 @@ function audioConfigPatch(key: CanvasAudioSettingKey, value: string) {
     if (key === "audioSpeed") return { audioSpeed: value };
     return { audioInstructions: value };
 }
+
+
+

@@ -260,7 +260,9 @@ export function resolveModelGenerationDefaults(
             count: source("count"),
             transparentBackground: source("transparentBackground"),
         });
-        return normalized;
+        // 图像工作流会用 resolutionTier 把分辨率档位存到 vquality；
+        // 这里必须原样带回节点值，否则弹窗永远只能看到全局视频分辨率。
+        return { ...normalized, vquality: source("vquality") };
     }
 
     if (capability === "video" && profile.video) {

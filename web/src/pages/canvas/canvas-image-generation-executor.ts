@@ -6,8 +6,9 @@ import { buildImageGenerationNodeTitle } from "@/lib/canvas/canvas-generation-ti
 import { nodeSizeFromRatio } from "@/lib/canvas/canvas-node-size";
 import { canvasImageReferenceLimitError, buildImageGenerationMetadata, getGenerationCount, isGenerationCanceled, runCanvasGenerationTaskToConsumer } from "@/lib/canvas/canvas-project-generation";
 import { CONTENT_MODERATION_ERROR_CODE, generationFailureMetadata, type GenerationFailureMetadata } from "@/lib/generation-error";
+import { getActiveUserScope } from "@/lib/user-scope";
 import { CanvasNodeType, type CanvasNodeData } from "@/types/canvas";
-import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
+import { updateProjectNodesPreservingGenerationCommits } from "@/stores/canvas/use-canvas-store";
 
 import type { CanvasGenerationExecution } from "./canvas-generation-executor-types";
 
@@ -155,7 +156,7 @@ export async function executeImageGeneration({
     setConnections((current) => {
         const nextConnections = [...current, ...batchConnections];
         if (projectId) {
-            useCanvasStore.getState().updateProject(projectId, { nodes: nextNodes, connections: nextConnections });
+            updateProjectNodesPreservingGenerationCommits(getActiveUserScope(), projectId, nextNodes);
         }
         return nextConnections;
     });
@@ -230,7 +231,7 @@ export async function executeImageGeneration({
                                   }
                                 : node,
                         );
-                        if (projectId) useCanvasStore.getState().updateProject(projectId, { nodes: updated });
+                        if (projectId) updateProjectNodesPreservingGenerationCommits(getActiveUserScope(), projectId, updated);
                         return updated;
                     });
                 }
@@ -245,7 +246,7 @@ export async function executeImageGeneration({
                 failureCount += 1;
                 setNodes((current) => {
                     const next = current.map((node) => (node.id === targetId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, ...failure } } : node));
-                    if (projectId) useCanvasStore.getState().updateProject(projectId, { nodes: next });
+                    if (projectId) updateProjectNodesPreservingGenerationCommits(getActiveUserScope(), projectId, next);
                     return next;
                 });
                 return false;
@@ -285,7 +286,7 @@ export async function executeImageGeneration({
             }
             return node;
         });
-        if (projectId) useCanvasStore.getState().updateProject(projectId, { nodes: next });
+        if (projectId) updateProjectNodesPreservingGenerationCommits(getActiveUserScope(), projectId, next);
         return next;
     });
 }

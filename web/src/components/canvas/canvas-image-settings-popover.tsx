@@ -3,14 +3,15 @@ import { createPortal } from "react-dom";
 import { Settings2 } from "lucide-react";
 import { Button } from "antd";
 
-import { ImageSettingsPanel, imageQualityLabel, imageSizeLabel } from "@/components/image-settings-panel";
+import { ImageSettingsPanel, imageQualityLabel, imageResolutionTierLabel, imageSizeLabel } from "@/components/image-settings-panel";
 import { canvasThemes } from "@/lib/canvas-theme";
-import { modelCapabilityConfigFor, normalizeImageValue } from "@/lib/model-capabilities";
+import { modelCapabilityConfigFor, normalizeImageValue, workflowImageCapabilityConfig, type WorkflowVideoFieldLike } from "@/lib/model-capabilities";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { AiConfig } from "@/stores/use-config-store";
 
 type CanvasImageSettingsPopoverProps = {
     config: AiConfig;
+    workflowFields?: WorkflowVideoFieldLike[];
     onConfigChange: (key: keyof AiConfig, value: string) => void;
     onMissingConfig?: () => void;
     onOpenChange?: (open: boolean) => void;
@@ -21,16 +22,19 @@ type CanvasImageSettingsPopoverProps = {
     showCount?: boolean;
 };
 
-export function CanvasImageSettingsPopover({ config, onConfigChange, onOpenChange, buttonClassName, placement = "topLeft", showCount = true }: CanvasImageSettingsPopoverProps) {
+export function CanvasImageSettingsPopover({ config, workflowFields = [], onConfigChange, onOpenChange, buttonClassName, placement = "topLeft", showCount = true }: CanvasImageSettingsPopoverProps) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const buttonRef = useRef<HTMLSpanElement>(null);
     const panelRef = useRef<HTMLDivElement>(null);
     const [open, setOpen] = useState(false);
     const [buttonRect, setButtonRect] = useState<DOMRect | null>(null);
-    const profile = modelCapabilityConfigFor(config, config.model || config.imageModel).image!;
+    const profile = workflowFields.length
+        ? workflowImageCapabilityConfig(workflowFields)
+        : modelCapabilityConfigFor(config, config.model || config.imageModel).image!;
     const normalized = normalizeImageValue(profile, config);
     const summaryParts = [
         ...(profile.size.parameter !== "none" ? [imageSizeLabel(normalized.size)] : []),
+        ...(profile.resolutionTier ? [imageResolutionTierLabel(config.vquality, profile) || profile.resolutionTier.default].map((tier) => `${tier} 短边`) : []),
         ...(profile.quality.supported ? [imageQualityLabel(normalized.quality)] : []),
         ...(showCount && profile.maxOutputs > 1 ? [`${normalized.count} 张`] : []),
         ...(profile.transparentBackground.supported && normalized.transparentBackground === "true" ? ["透明"] : []),
@@ -65,7 +69,7 @@ export function CanvasImageSettingsPopover({ config, onConfigChange, onOpenChang
         };
     }, [onOpenChange, open]);
 
-    const panel = open && buttonRect ? <ImageSettingsPortal buttonRect={buttonRect} panelRef={panelRef} placement={placement} theme={theme} config={config} showCount={showCount} onConfigChange={onConfigChange} /> : null;
+    const panel = open && buttonRect ? <ImageSettingsPortal buttonRect={buttonRect} panelRef={panelRef} placement={placement} theme={theme} config={config} showCount={showCount} workflowFields={workflowFields} onConfigChange={onConfigChange} /> : null;
 
     if (!hasSettings) return null;
 
@@ -88,6 +92,7 @@ function ImageSettingsPortal({
     theme,
     config,
     showCount,
+    workflowFields,
     onConfigChange,
 }: {
     buttonRect: DOMRect;
@@ -96,6 +101,7 @@ function ImageSettingsPortal({
     theme: (typeof canvasThemes)[keyof typeof canvasThemes];
     config: AiConfig;
     showCount: boolean;
+    workflowFields: WorkflowVideoFieldLike[];
     onConfigChange: (key: keyof AiConfig, value: string) => void;
 }) {
     const gap = 8;
@@ -129,7 +135,7 @@ function ImageSettingsPortal({
             onMouseDown={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
         >
-            <ImageSettingsPanel config={config} onConfigChange={(key, value) => onConfigChange(key, value)} theme={theme} showCount={showCount} quickCount={3} className="space-y-3" />
+            <ImageSettingsPanel config={config} workflowFields={workflowFields} onConfigChange={(key, value) => onConfigChange(key, value)} theme={theme} showCount={showCount} quickCount={3} className="space-y-3" />
         </div>,
         document.body,
     );
