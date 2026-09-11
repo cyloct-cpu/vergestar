@@ -37,11 +37,10 @@ describe("workspace route loading", () => {
 
         expect(router).toContain('{ path: "/", element: <RequireAuth>{deferred(<CreatePage />)}</RequireAuth> }');
         expect(router).toContain('{ path: "/create", element: <RequireAuth>{deferred(<CreatePage />)}</RequireAuth> }');
-        expect(router).not.toContain('path: "/home"');
-        expect(router).not.toContain("HomePage");
-        expect(navigation).toContain('{ id: "home", title: "首页", icon: Home, to: "/" }');
+        // vergestar 分支保留了 /home 创作仪表盘路由与侧边栏 /home 入口（上游已移除），其余断言与上游一致。
+        expect(router).toContain('{ path: "/home", element: deferred(<HomePage />) }');
+        expect(navigation).toContain('{ id: "home", title: "首页", icon: Home, to: "/home" }');
         expect(navigation).not.toContain('to: "/create"');
-        expect(navigation).not.toContain('to: "/home"');
     });
 
     test("preloads canvas detail and paints opening feedback before navigation", () => {
