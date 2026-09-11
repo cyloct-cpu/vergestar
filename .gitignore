@@ -16,6 +16,7 @@ dist/
 /web/public/OpenAICanvas-ComfyBridge.exe
 /web/public/OpenAICanvas-ComfyBridge-linux-amd64
 /web/public/OpenAICanvas-ComfyBridge-linux-arm64
+novel-agent/.jobs/
 *.db
 *.db-*
 *.sqlite
