@@ -1174,6 +1174,48 @@ func (r *Repository) UpdateProject(project *model.Project) error {
 	}).Error
 }
 
+// StoryAgentJobUpsert mirrors a Novel Agent Bridge job into the DB (history + recovery).
+func (r *Repository) StoryAgentJobUpsert(job *model.StoryAgentJob) error {
+    return r.db.Save(job).Error
+}
+
+func (r *Repository) StoryAgentJobForUser(userID, jobID string) (*model.StoryAgentJob, error) {
+    var job model.StoryAgentJob
+    err := r.db.Where("user_id = ? AND id = ?", userID, jobID).First(&job).Error
+    if err != nil {
+        return nil, err
+    }
+    return &job, nil
+}
+
+func (r *Repository) StoryAgentJobsForUser(userID string, limit int) ([]model.StoryAgentJob, error) {
+    if limit <= 0 || limit > 100 {
+        limit = 30
+    }
+    var jobs []model.StoryAgentJob
+    err := r.db.Where("user_id = ?", userID).Order("created_at DESC").Limit(limit).Find(&jobs).Error
+    return jobs, err
+}
+
+func (r *Repository) StoryAgentActiveJobsForUser(userID string) ([]model.StoryAgentJob, error) {
+    var jobs []model.StoryAgentJob
+    err := r.db.Where("user_id = ? AND status IN (?)", userID, []string{"queued", "running"}).Order("created_at ASC").Find(&jobs).Error
+    return jobs, err
+}
+
+func (r *Repository) StoryAgentSessionRename(userID, sessionID, title string) error {
+    return r.db.Model(&model.StoryAgentSession{}).Where("user_id = ? AND id = ?", userID, sessionID).
+        Updates(map[string]any{"title": title, "updated_at": time.Now()}).Error
+}
+
+func (r *Repository) StoryAgentSessionDelete(userID, sessionID string) error {
+    return r.db.Transaction(func(tx *gorm.DB) error {
+        if err := tx.Where("user_id = ? AND session_id = ?", userID, sessionID).Delete(&model.StoryAgentMessage{}).Error; err != nil {
+            return err
+        }
+        return tx.Where("user_id = ? AND id = ?", userID, sessionID).Delete(&model.StoryAgentSession{}).Error
+    })
+}
 func (r *Repository) DeleteProject(userID string, id string, canvasUpdates []model.CanvasProject) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		var canvasIDs []string
@@ -1873,6 +1915,10 @@ func (r *Repository) ProjectShotRevisions(projectID string) ([]model.ShotRevisio
 		Where("shots.project_id = ?", projectID).
 		Order("shots.unit_id asc, shots.position asc, shot_revisions.version asc").Scan(&revisions).Error
 	return revisions, err
+}
+
+func (r *Repository) UpdateShotRevisionContinuityNotes(revisionID, continuityNotes string) error {
+	return r.db.Model(&model.ShotRevision{}).Where("id = ?", revisionID).Update("continuity_notes", continuityNotes).Error
 }
 
 func (r *Repository) ProjectShotArtifacts(projectID string) ([]model.ShotArtifact, error) {

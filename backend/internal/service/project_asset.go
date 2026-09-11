@@ -2,10 +2,13 @@ package service
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
 	"infinite-canvas/backend/internal/model"
+
+	"gorm.io/gorm"
 )
 
 type LinkProjectAssetRequest struct {
@@ -344,7 +347,14 @@ func (s *Service) ConfirmProjectAssetCandidate(userID string, projectID string, 
 		if saveErr := s.repo.ConfirmProjectCharacterCandidate(candidate, &nextAsset, &nextVersion, representations, voice); saveErr != nil {
 			return ProjectAssetSummary{}, saveErr
 		}
-		return s.projectAssetSummary(userID, projectID, &nextAsset)
+		summary, summaryErr := s.projectAssetSummary(userID, projectID, &nextAsset)
+		if summaryErr != nil {
+			return ProjectAssetSummary{}, summaryErr
+		}
+		if syncErr := s.syncConfirmedInkOSScriptCharacterCandidate(userID, projectID, *candidate); syncErr != nil {
+			return ProjectAssetSummary{}, syncErr
+		}
+		return summary, nil
 	}
 	createAsset := assetID == ""
 	var asset model.Asset
@@ -394,7 +404,40 @@ func (s *Service) ConfirmProjectAssetCandidate(userID string, projectID string, 
 	if err := s.repo.ConfirmProjectAssetCandidate(candidate, &asset, &version, &link, createAsset); err != nil {
 		return ProjectAssetSummary{}, err
 	}
-	return s.projectAssetSummary(userID, projectID, &asset)
+	summary, summaryErr := s.projectAssetSummary(userID, projectID, &asset)
+	if summaryErr != nil {
+		return ProjectAssetSummary{}, summaryErr
+	}
+	if syncErr := s.syncConfirmedInkOSScriptCharacterCandidate(userID, projectID, *candidate); syncErr != nil {
+		return ProjectAssetSummary{}, syncErr
+	}
+	return summary, nil
+}
+
+func (s *Service) syncConfirmedInkOSScriptCharacterCandidate(userID, projectID string, candidate model.ProjectAssetCandidate) error {
+	if candidate.Source != assetCandidateSourceInkOSScriptCharacter || candidate.Category != model.AssetCategoryCharacter || strings.TrimSpace(candidate.UnitID) == "" {
+		return nil
+	}
+	foundation, err := s.repo.StoryFoundationForProject(projectID)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	unit, err := s.repo.ProjectUnit(projectID, candidate.UnitID)
+	if err != nil {
+		return err
+	}
+	files := novelProductionFilesForUnit(decodeNovelFoundationFiles(foundation.FilesJSON), *unit)
+	if len(files) == 0 {
+		return nil
+	}
+	return s.syncNovelProductionArtifacts(userID, projectID, NovelAgentArtifacts{
+		BookID:           foundation.InkosBookID,
+		ProductionUnitID: candidate.UnitID,
+		ProductionFiles:  files,
+	})
 }
 
 func mergeCharacterCandidateDefinition(currentJSON string, candidateJSON string, currentName string, candidateName string) (string, error) {

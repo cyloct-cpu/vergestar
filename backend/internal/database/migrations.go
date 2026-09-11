@@ -10,11 +10,20 @@ import (
 	"gorm.io/gorm"
 )
 
-const CurrentSchemaVersion int64 = 3
+const CurrentSchemaVersion int64 = 12
 
 const baselineSchemaChecksum = "sha256:open-ai-canvas-schema-v1-20260830"
 const schemaMigrationAppliedAtIndexChecksum = "sha256:schema-migrations-applied-at-index-v2-20260830"
 const assetTaxonomyCandidateIdentityChecksum = "sha256:asset-taxonomy-candidate-identity-v3-20260831-r1"
+const storyDomainFoundationChecksum = "sha256:story-domain-foundation-v4-20260908"
+const storySceneFoundationChecksum = "sha256:story-scene-foundation-v5-20260908"
+const storySceneShotLinkChecksum = "sha256:story-scene-shot-link-v6-20260908"
+const storyAgentSessionChecksum = "sha256:story-agent-session-v7-20260908"
+const storyFoundationChecksum = "sha256:story-foundation-v8-20260908"
+const storyAgentConfirmationChecksum = "sha256:story-agent-confirmation-v9-20260909"
+const storyFoundationAgentSessionChecksum = "sha256:story-foundation-agent-session-v10-20260909"
+const storyAgentArtifactsChecksum = "sha256:story-agent-artifacts-v11-20260910"
+const storyAgentJobHistoryChecksum = "sha256:story-agent-job-history-v12-20260911"
 
 const postgresSchemaMigrationLockID int64 = 73123910420260830
 
@@ -44,6 +53,39 @@ var schemaMigrations = []migration{
 	{version: 1, name: "baseline_gorm_schema", checksum: baselineSchemaChecksum, apply: migrateSchemaV1},
 	{version: 2, name: "schema_migrations_applied_at_index", checksum: schemaMigrationAppliedAtIndexChecksum, apply: migrateSchemaV2},
 	{version: 3, name: "asset_taxonomy_candidate_identity", checksum: assetTaxonomyCandidateIdentityChecksum, apply: migrateSchemaV3},
+	{version: 4, name: "story_domain_foundation", checksum: storyDomainFoundationChecksum, apply: migrateSchemaV4},
+	{version: 5, name: "story_scene_foundation", checksum: storySceneFoundationChecksum, apply: migrateSchemaV5},
+	{version: 6, name: "story_scene_shot_link", checksum: storySceneShotLinkChecksum, apply: migrateSchemaV6},
+	{version: 7, name: "story_agent_session", checksum: storyAgentSessionChecksum, apply: migrateSchemaV7},
+	{version: 8, name: "story_foundation", checksum: storyFoundationChecksum, apply: migrateSchemaV8},
+	{version: 9, name: "story_agent_confirmation", checksum: storyAgentConfirmationChecksum, apply: migrateSchemaV9},
+	{version: 10, name: "story_foundation_agent_session", checksum: storyFoundationAgentSessionChecksum, apply: migrateSchemaV10},
+	{version: 11, name: "story_agent_artifacts", checksum: storyAgentArtifactsChecksum, apply: migrateSchemaV11},
+	{version: 12, name: "story_agent_job_history", checksum: storyAgentJobHistoryChecksum, apply: migrateSchemaV12},
+}
+
+func migrateSchemaV5(tx *gorm.DB) error { return tx.AutoMigrate(&model.StoryScene{}) }
+func migrateSchemaV6(tx *gorm.DB) error { return tx.AutoMigrate(&model.StorySceneShotLink{}) }
+func migrateSchemaV7(tx *gorm.DB) error {
+	return tx.AutoMigrate(&model.StoryAgentSession{}, &model.StoryAgentMessage{})
+}
+
+func migrateSchemaV8(tx *gorm.DB) error { return tx.AutoMigrate(&model.StoryFoundation{}) }
+
+func migrateSchemaV9(tx *gorm.DB) error { return tx.AutoMigrate(&model.StoryAgentMessage{}) }
+
+func migrateSchemaV10(tx *gorm.DB) error { return tx.AutoMigrate(&model.StoryFoundation{}) }
+
+func migrateSchemaV11(tx *gorm.DB) error { return tx.AutoMigrate(&model.StoryAgentMessage{}) }
+func migrateSchemaV12(tx *gorm.DB) error { return tx.AutoMigrate(&model.StoryAgentJob{}) }
+
+func migrateSchemaV4(tx *gorm.DB) error {
+	return tx.AutoMigrate(
+		&model.StoryChapterVersion{},
+		&model.StoryReview{},
+		&model.StoryMemory{},
+		&model.StoryBranch{},
+	)
 }
 
 func migrateSchemaV2(tx *gorm.DB) error {

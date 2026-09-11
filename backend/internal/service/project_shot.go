@@ -65,7 +65,10 @@ type CreateAssetCandidatesRequest struct {
 	Source     string                `json:"source"`
 }
 
-const assetCandidateSourceChapterCharacter = "chapter_character_extract"
+const (
+	assetCandidateSourceChapterCharacter     = "chapter_character_extract"
+	assetCandidateSourceInkOSScriptCharacter = "inkos_script_character"
+)
 
 func (s *Service) CreateProjectShot(userID string, projectID string, req CreateProjectShotRequest) (model.Shot, error) {
 	if _, err := s.activeProjectForUser(userID, projectID); err != nil {
@@ -324,8 +327,8 @@ func (s *Service) CreateProjectAssetCandidates(userID string, projectID string, 
 		if name == "" || nameKey == "" || !validAssetCategory(category) {
 			return nil, BadAuthRequest("资产候选名称或分类无效")
 		}
-		if category == model.AssetCategoryCharacter && source != assetCandidateSourceChapterCharacter {
-			return nil, BadAuthRequest("角色候选只能从剧情章节的角色提取流程创建")
+		if category == model.AssetCategoryCharacter && source != assetCandidateSourceChapterCharacter && source != assetCandidateSourceInkOSScriptCharacter {
+			return nil, BadAuthRequest("角色候选只能从剧情章节或 InkOS 剧本提取流程创建")
 		}
 		if category == model.AssetCategoryCharacter && strings.TrimSpace(input.UnitID) == "" {
 			return nil, BadAuthRequest("角色候选必须关联剧情章节")
@@ -344,8 +347,12 @@ func (s *Service) CreateProjectAssetCandidates(userID string, projectID string, 
 		if err != nil {
 			return nil, BadAuthRequest("资产候选详情格式无效")
 		}
-		if category == model.AssetCategoryCharacter {
+		if category == model.AssetCategoryCharacter && source == assetCandidateSourceChapterCharacter {
 			if err := validateCharacterCandidateDetails(input.Details); err != nil {
+				return nil, err
+			}
+		} else if category == model.AssetCategoryCharacter && source == assetCandidateSourceInkOSScriptCharacter {
+			if err := validateInkOSScriptCharacterCandidateDetails(input.Details); err != nil {
 				return nil, err
 			}
 		}
@@ -479,6 +486,17 @@ func validateCharacterCandidateDetails(details map[string]any) error {
 	}
 	if text("role") == "" || descriptiveCount < 3 || text("voiceLanguage") == "" || text("voiceAge") == "" || text("voiceTimbre") == "" {
 		return BadAuthRequest("角色候选必须包含剧情定位、稳定设定和声音画像")
+	}
+	return nil
+}
+
+func validateInkOSScriptCharacterCandidateDetails(details map[string]any) error {
+	text := func(key string) string {
+		value, _ := details[key].(string)
+		return strings.TrimSpace(value)
+	}
+	if text("sourceType") != "inkos-script" || text("sourceId") == "" || text("role") == "" || text("sceneTitle") == "" {
+		return BadAuthRequest("InkOS 剧本角色候选缺少来源或场次信息")
 	}
 	return nil
 }

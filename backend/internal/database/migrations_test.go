@@ -31,6 +31,27 @@ func TestMigrateSchemaRecordsAndValidatesVersion(t *testing.T) {
 	if !db.Migrator().HasIndex(&model.ProjectAssetCandidate{}, "idx_project_asset_candidates_pending_identity") {
 		t.Fatal("schema migration v3 did not create candidate identity index")
 	}
+	if !db.Migrator().HasTable(&model.StoryChapterVersion{}) || !db.Migrator().HasTable(&model.StoryReview{}) || !db.Migrator().HasTable(&model.StoryMemory{}) || !db.Migrator().HasTable(&model.StoryBranch{}) {
+		t.Fatal("schema migration v4 did not create story domain tables")
+	}
+	if !db.Migrator().HasTable(&model.StoryScene{}) {
+		t.Fatal("schema migration v5 did not create story scene table")
+	}
+	if !db.Migrator().HasTable(&model.StorySceneShotLink{}) {
+		t.Fatal("schema migration v6 did not create story scene shot link table")
+	}
+	if !db.Migrator().HasTable(&model.StoryAgentSession{}) || !db.Migrator().HasTable(&model.StoryAgentMessage{}) {
+		t.Fatal("schema migration v7 did not create story agent session tables")
+	}
+	if !db.Migrator().HasTable(&model.StoryFoundation{}) {
+		t.Fatal("schema migration v8 did not create story foundation table")
+	}
+	if !db.Migrator().HasColumn(&model.StoryAgentMessage{}, "confirmation_json") {
+		t.Fatal("schema migration v9 did not create confirmation_json column")
+	}
+	if !db.Migrator().HasColumn(&model.StoryFoundation{}, "agent_session_id") {
+		t.Fatal("schema migration v10 did not create agent_session_id column")
+	}
 	if err := MigrateSchema(db); err != nil {
 		t.Fatalf("migration should be idempotent: %v", err)
 	}

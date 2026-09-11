@@ -220,6 +220,163 @@ type ProjectUnit struct {
 	UpdatedAt  time.Time         `json:"updatedAt"`
 }
 
+// StoryChapterVersion stores an immutable prose snapshot. ProjectUnit remains
+// the current chapter pointer used by the existing screenplay workflow.
+type StoryChapterVersion struct {
+	ID         string    `json:"id" gorm:"primaryKey;size:36"`
+	ProjectID  string    `json:"projectId" gorm:"index;size:36;uniqueIndex:idx_story_chapter_versions_unit_number,priority:1"`
+	UnitID     string    `json:"unitId" gorm:"index;size:36;uniqueIndex:idx_story_chapter_versions_unit_number,priority:2"`
+	Number     int       `json:"number" gorm:"uniqueIndex:idx_story_chapter_versions_unit_number,priority:3"`
+	Title      string    `json:"title" gorm:"size:240"`
+	Content    string    `json:"content" gorm:"type:text"`
+	SourceHash string    `json:"sourceHash" gorm:"size:96;index"`
+	CreatedBy  string    `json:"createdBy,omitempty" gorm:"index;size:36"`
+	CreatedAt  time.Time `json:"createdAt" gorm:"index"`
+}
+
+// StoryReview records review output separately from chapter prose so a later
+// revision can be compared to the original review and source version.
+type StoryReview struct {
+	ID               string    `json:"id" gorm:"primaryKey;size:36"`
+	ProjectID        string    `json:"projectId" gorm:"index;size:36;index:idx_story_reviews_project_unit_created,priority:1"`
+	UnitID           string    `json:"unitId" gorm:"index;size:36;index:idx_story_reviews_project_unit_created,priority:2"`
+	ChapterVersionID string    `json:"chapterVersionId" gorm:"index;size:36"`
+	Status           string    `json:"status" gorm:"index;size:24"`
+	Summary          string    `json:"summary" gorm:"type:text"`
+	IssuesJSON       string    `json:"issuesJson" gorm:"type:text"`
+	CreatedAt        time.Time `json:"createdAt" gorm:"index:idx_story_reviews_project_unit_created,priority:3"`
+	UpdatedAt        time.Time `json:"updatedAt"`
+}
+
+// StoryMemory is a user-approved fact or summary. Its source reference keeps
+// retrieval traceable when a chapter, review, or branch later changes.
+type StoryMemory struct {
+	ID         string    `json:"id" gorm:"primaryKey;size:36"`
+	ProjectID  string    `json:"projectId" gorm:"index;size:36;index:idx_story_memories_project_kind_created,priority:1"`
+	Kind       string    `json:"kind" gorm:"size:32;index:idx_story_memories_project_kind_created,priority:2"`
+	Content    string    `json:"content" gorm:"type:text"`
+	SourceType string    `json:"sourceType" gorm:"size:32"`
+	SourceID   string    `json:"sourceId" gorm:"index;size:36"`
+	SourceHash string    `json:"sourceHash" gorm:"size:96;index"`
+	CreatedAt  time.Time `json:"createdAt" gorm:"index:idx_story_memories_project_kind_created,priority:3"`
+	UpdatedAt  time.Time `json:"updatedAt"`
+}
+
+// StoryBranch is an isolated future-plan candidate. It never mutates the
+// current chapter or story state until an explicit future adoption operation.
+type StoryBranch struct {
+	ID             string    `json:"id" gorm:"primaryKey;size:36"`
+	ProjectID      string    `json:"projectId" gorm:"index;size:36;index:idx_story_branches_project_created,priority:1"`
+	BaseUnitID     string    `json:"baseUnitId" gorm:"index;size:36"`
+	BaseSourceHash string    `json:"baseSourceHash" gorm:"size:96;index"`
+	Title          string    `json:"title" gorm:"size:240"`
+	PlanJSON       string    `json:"planJson" gorm:"type:text"`
+	Status         string    `json:"status" gorm:"index;size:24"`
+	CreatedAt      time.Time `json:"createdAt" gorm:"index:idx_story_branches_project_created,priority:2"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+}
+
+// StoryScene is the screenplay boundary between prose and the existing shot
+// and canvas production workflow.
+type StoryScene struct {
+	ID                    string    `json:"id" gorm:"primaryKey;size:36"`
+	ProjectID             string    `json:"projectId" gorm:"index;size:36;index:idx_story_scenes_project_unit_position,priority:1"`
+	UnitID                string    `json:"unitId" gorm:"index;size:36;index:idx_story_scenes_project_unit_position,priority:2"`
+	Position              int       `json:"position" gorm:"index:idx_story_scenes_project_unit_position,priority:3"`
+	Title                 string    `json:"title" gorm:"size:240"`
+	Location              string    `json:"location" gorm:"size:240"`
+	TimeOfDay             string    `json:"timeOfDay" gorm:"size:80"`
+	Action                string    `json:"action" gorm:"type:text"`
+	Dialogue              string    `json:"dialogue" gorm:"type:text"`
+	Emotion               string    `json:"emotion" gorm:"size:240"`
+	VisualIntent          string    `json:"visualIntent" gorm:"type:text"`
+	CharacterAssetIDsJSON string    `json:"characterAssetIdsJson" gorm:"type:text"`
+	EnvironmentAssetID    string    `json:"environmentAssetId,omitempty" gorm:"index;size:80"`
+	SourceHash            string    `json:"sourceHash" gorm:"size:96;index"`
+	Status                string    `json:"status" gorm:"index;size:24"`
+	CreatedAt             time.Time `json:"createdAt"`
+	UpdatedAt             time.Time `json:"updatedAt"`
+}
+
+// StorySceneShotLink records the source scene for a production shot. The hash
+// makes stale detection deterministic when story scenes later become editable.
+type StorySceneShotLink struct {
+	ID         string    `json:"id" gorm:"primaryKey;size:36"`
+	ProjectID  string    `json:"projectId" gorm:"index;size:36"`
+	UnitID     string    `json:"unitId" gorm:"index;size:36"`
+	SceneID    string    `json:"sceneId" gorm:"index;size:36;uniqueIndex:idx_story_scene_shot_unique,priority:1"`
+	ShotID     string    `json:"shotId" gorm:"index;size:36;uniqueIndex:idx_story_scene_shot_unique,priority:2"`
+	SourceHash string    `json:"sourceHash" gorm:"size:96;index"`
+	CreatedAt  time.Time `json:"createdAt"`
+	UpdatedAt  time.Time `json:"updatedAt"`
+}
+
+// StoryAgentSession is the durable user-facing Novel Agent conversation.
+// It intentionally stores no model credential: credentials belong only to an
+// individual in-memory turn forwarded through Vergestar's channel boundary.
+type StoryAgentSession struct {
+	ID        string    `json:"id" gorm:"primaryKey;size:36"`
+	UserID    string    `json:"userId" gorm:"index;size:36;index:idx_story_agent_sessions_user_updated,priority:1"`
+	ProjectID string    `json:"projectId,omitempty" gorm:"index;size:36"`
+	Title     string    `json:"title" gorm:"size:240"`
+	Mode      string    `json:"mode" gorm:"size:48"`
+	Status    string    `json:"status" gorm:"index;size:24"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt" gorm:"index:idx_story_agent_sessions_user_updated,priority:2"`
+}
+
+// StoryAgentJob is the Vergestar DB mirror of a Novel Agent Bridge job.
+// It is the history/recovery source of truth for the task list UI; the
+// bridge .jobs snapshot remains the execution-side record. Result content
+// is not mirrored (bridge owns artifacts); a succeeded row points pollers
+// back to the bridge for full artifacts.
+type StoryAgentJob struct {
+    ID             string    `json:"id" gorm:"primaryKey;size:36"`
+    UserID         string    `json:"userId" gorm:"index;size:36;index:idx_story_agent_jobs_user_created,priority:1"`
+    SessionID      string    `json:"sessionId" gorm:"index;size:120"`
+    BookID         string    `json:"bookId,omitempty" gorm:"size:160"`
+    Mode           string    `json:"mode" gorm:"size:48"`
+    ConfirmedIntent string   `json:"confirmedIntent,omitempty" gorm:"size:48"`
+    Status         string    `json:"status" gorm:"index;size:24"`
+    Stage          string    `json:"stage" gorm:"size:240"`
+    Error          string    `json:"error,omitempty" gorm:"type:text"`
+    LogsJSON       string    `json:"-" gorm:"type:text"`
+    ResultSummary  string    `json:"resultSummary,omitempty" gorm:"type:text"`
+    CreatedAt      time.Time `json:"createdAt"`
+    UpdatedAt      time.Time `json:"updatedAt" gorm:"index:idx_story_agent_jobs_user_created,priority:2"`
+}
+type StoryAgentMessage struct {
+	ID         string `json:"id" gorm:"primaryKey;size:36"`
+	SessionID  string `json:"sessionId" gorm:"index;size:36;index:idx_story_agent_messages_session_created,priority:1"`
+	Role       string `json:"role" gorm:"size:24"`
+	Content    string `json:"content" gorm:"type:text"`
+	SkillsJSON string `json:"skillsJson" gorm:"type:text"`
+	// ConfirmationJSON keeps the structured action available after a page
+	// refresh without putting model credentials or internal paths in history.
+	ConfirmationJSON string    `json:"confirmationJson,omitempty" gorm:"type:text"`
+	// ArtifactsJSON stores a bounded production projection payload for
+	// completed confirmed jobs. It contains no credentials or workspace paths.
+	ArtifactsJSON string `json:"artifactsJson,omitempty" gorm:"type:text"`
+	CreatedAt        time.Time `json:"createdAt" gorm:"index:idx_story_agent_messages_session_created,priority:2"`
+}
+
+// StoryFoundation is the Vergestar-owned projection of an InkOS book
+// foundation. FilesJSON preserves the reviewed source documents while the
+// project remains the user-facing aggregate used by the rest of the app.
+type StoryFoundation struct {
+	ID             string    `json:"id" gorm:"primaryKey;size:36"`
+	ProjectID      string    `json:"projectId" gorm:"uniqueIndex;size:36"`
+	UserID         string    `json:"userId" gorm:"index;size:36;uniqueIndex:idx_story_foundation_user_book,priority:1"`
+	InkosBookID    string    `json:"inkosBookId" gorm:"size:240;uniqueIndex:idx_story_foundation_user_book,priority:2"`
+	AgentSessionID string    `json:"agentSessionId,omitempty" gorm:"index;size:36"`
+	Title          string    `json:"title" gorm:"size:240"`
+	BookJSON       string    `json:"bookJson" gorm:"type:text"`
+	FilesJSON      string    `json:"filesJson" gorm:"type:text"`
+	SourceHash     string    `json:"sourceHash" gorm:"size:96;index"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+}
+
 type CanvasUnitLink struct {
 	ID        string    `json:"id" gorm:"primaryKey;size:36"`
 	ProjectID string    `json:"projectId" gorm:"index;size:36;uniqueIndex:idx_canvas_unit_links_unique,priority:1;index:idx_canvas_unit_links_project_unit,priority:1"`

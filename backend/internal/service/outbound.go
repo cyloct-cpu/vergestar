@@ -353,7 +353,7 @@ func resolveOutboundHostWithPolicy(ctx context.Context, host string, allowPrivat
 	if len(addresses) == 0 {
 		return nil, BadAuthRequest("外部服务域名没有可用地址")
 	}
-	if allowPrivateHost && customRelayAddressesAreFakeIP(addresses) {
+	if customRelayAddressesAreFakeIP(addresses) {
 		if publicAddresses, dohErr := lookupAllowedHostOverHTTPS(ctx, host); dohErr == nil {
 			addresses = append(addresses, publicAddresses...)
 			addresses = deduplicateOutboundIPs(addresses)
@@ -410,9 +410,6 @@ type dohResponse struct {
 }
 
 func lookupAllowedHostOverHTTPS(ctx context.Context, host string) ([]net.IP, error) {
-	if !allowedPrivateUpstreamHost(host) {
-		return nil, errors.New("host is not explicitly allowlisted")
-	}
 	endpoints := []string{
 		"https://223.5.5.5/resolve?name=" + url.QueryEscape(host) + "&type=A",
 		"https://1.1.1.1/dns-query?name=" + url.QueryEscape(host) + "&type=A",

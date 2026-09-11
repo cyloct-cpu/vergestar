@@ -70,6 +70,9 @@ func run(ctx context.Context) error {
 	addr := env("CANVAS_BACKEND_ADDR", ":8080")
 	capabilities := service.RuntimeCapabilitiesForDeployment(addr, os.Getenv("CANVAS_DESKTOP_LOCAL_CHANNELS_ENABLED"))
 	svc := service.NewWithRuntimeCapabilities(repo, dataDir, capabilities)
+	if err := svc.ConfigureNovelAgent(os.Getenv("VERGESTAR_NOVEL_AGENT_URL"), os.Getenv("VERGESTAR_NOVEL_AGENT_TOKEN")); err != nil {
+		return err
+	}
 	if updaterToken := strings.TrimSpace(os.Getenv("CANVAS_UPDATER_TOKEN")); updaterToken != "" {
 		svc.ConfigureUpdateManager(updaterclient.New(env("CANVAS_UPDATER_SOCKET", "/run/open-ai-canvas-updater/updater.sock"), updaterToken))
 	}
@@ -137,6 +140,9 @@ func run(ctx context.Context) error {
 	handler.RegisterUserDataRoutes(api, svc)
 	handler.RegisterDiagnosticsRoutes(api, svc)
 	handler.RegisterPluginRoutes(api, svc)
+	handler.RegisterNovelAgentRoutes(api, svc)
+	handler.RegisterNovelAgentJobStream(api, svc)
+	handler.RegisterStoryRoutes(api, svc)
 	projectAPI := api.Group("")
 	projectAPI.Use(handler.RequireFeature(svc, service.FeatureShortDrama))
 	handler.RegisterProjectRoutes(projectAPI, svc)
