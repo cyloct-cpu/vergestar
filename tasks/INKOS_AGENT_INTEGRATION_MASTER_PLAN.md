@@ -1072,7 +1072,15 @@ InkOS 完整子系统（PlayRunner / PlayStore / StoryGraph / 互动影游向导
 2. 游玩富 UI：当前游玩在聊天流内进行（文字 + 建议行动在正文中）；InkOS 式 PlayHUD/独立建议动作按钮/世界图片待做。
 3. Play 世界到 Vergestar 项目/画布的投影未接（世界数据以 PlayStore/GraphDB 为真相留在工作区）。
 
+## 2026-09-12 T5-Play 游玩交互闭环验收通过
+
+- play_step 实机验证：玩家行动（推门进办公室、出示 K-17 门牌、询问档案）→ 世界实质响应（值班员脸色变化、"三号码头东侧"红圈线索、日光灯环境细节，518 字）；state.md 状态投影同步更新（action/summary 记录行动与新增线索）。
+- `POST /agent/turn` 与 `POST /agent/jobs` 的 playMode 透传均已修复（此前各漏一处）；Bridge 已带双 10 分钟流超时重启。
+- 注意：play 回合耗时长（gpt-5.5 实测 >2 分钟），前端 axios 无超时限制可正常等待；直连测试需自备长超时。
+- **T5 Play 第一期（会话内文字游玩闭环）至此验收通过。** 剩余：游玩富 UI（PlayHUD/建议动作按钮/世界图片）、Play 世界投影到 Vergestar 项目、变体回放。
+
 ## 当前已知限制
+
 
 
 

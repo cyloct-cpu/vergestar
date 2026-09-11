@@ -151,6 +151,7 @@ app.post("/agent/jobs", (req, res, next) => {
             userId: body.userId,
             sessionId: body.sessionId,
             ...(typeof body.bookId === "string" ? { bookId: body.bookId } : {}),
+            ...(body.playMode === "open" || body.playMode === "guided" ? { playMode: body.playMode } : {}),
             ...(typeof body.mode === "string" ? { mode: body.mode } : {}),
             message: body.message,
             requestedSkills,
