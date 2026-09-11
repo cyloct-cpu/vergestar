@@ -1058,7 +1058,22 @@ InkOS 完整子系统（PlayRunner / PlayStore / StoryGraph / 互动影游向导
 - 顺带说明：历史中的 "Validation failed for tool propose_action" 条目为早期 propose_action 参数错误任务的持久化错误记录，属正常历史，切换新会话后不再显示。
 - 回归：typecheck 通过；浏览器验证点击剧本创作后旧内容清空、欢迎语出现、Skill 切换为 inkos-script-writing。
 
+## 2026-09-12 T5-Play 验收：play_start 世界构建通过 + 游玩交互缺口
+
+### 验收结果
+
+- **play_start 确认卡**：首页"开放世界"模式发起《悬镜市：雾中失踪案》世界构建——确认卡完整（世界契约/自由行动模式说明/不替玩家解谜约束），确认后 1m19s 构建成功。
+- **Play 工作区全套产物**：worlds/<id>/world.json + runs/main/play.db（PlayGraphDB 图数据库）+ projections/scene.md、state.md（场景与状态投影）+ transcript.jsonl。开场剧情含悬疑氛围、裁判 AI 环境压力、【建议前往：七号码头冷库】建议行动。
+- **结论：Play 管线（world 构建 + 图数据库 + 投影）在 Bridge 侧完整可用。**
+
+### 发现的缺口（下轮修复）
+
+1. `POST /agent/turn` 也未透传 playMode（与 mode 未透传同型问题——已修 jobs 端，turn 端待补）；游玩交互首回合返回空文本疑似与此相关或为渠道空响应，待复验。
+2. 游玩富 UI：当前游玩在聊天流内进行（文字 + 建议行动在正文中）；InkOS 式 PlayHUD/独立建议动作按钮/世界图片待做。
+3. Play 世界到 Vergestar 项目/画布的投影未接（世界数据以 PlayStore/GraphDB 为真相留在工作区）。
+
 ## 当前已知限制
+
 
 
 
