@@ -198,3 +198,31 @@ export function AgentBubble({ role, children }: { role: "user" | "assistant"; ch
         </div>
     );
 }
+
+
+// --- Play 开放世界游玩富 UI（T5）：建议行动解析为可点击按钮 ---
+
+export interface PlaySuggestions {
+    /** 去除建议行后的正文 */
+    body: string;
+    /** 提取出的建议行动 */
+    actions: string[];
+}
+
+/** 从 Play 回复中解析【建议前往：X】【你可以：Y】等建议行（InkOS guided 语义）。 */
+export function parsePlaySuggestions(text: string): PlaySuggestions {
+    const actions: string[] = [];
+    const body = text
+        .split("\n")
+        .filter((line) => {
+            const match = line.match(/^\s*[\u3010\[【]?\s*(?:建议[^\u3010\[】\]]*[：:]|你可以[：:]|可选行动[：:])\s*([^\u3010\[】\]]+)\s*[\u3011\]]?\s*$/);
+            if (match) {
+                actions.push(match[1].trim());
+                return false;
+            }
+            return true;
+        })
+        .join("\n")
+        .trim();
+    return { body, actions };
+}

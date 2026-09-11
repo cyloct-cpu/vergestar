@@ -243,3 +243,11 @@ func (r *Repository) StorySceneShotLinks(projectID, unitID string) ([]model.Stor
 	err := r.db.Where("project_id = ? AND unit_id = ?", projectID, unitID).Find(&links).Error
 	return links, err
 }
+
+// StoryAgentMessageExists reports whether a message with the given ID exists
+// in the session (used for idempotent job-result persistence).
+func (r *Repository) StoryAgentMessageExists(sessionID, messageID string) (bool, error) {
+	var count int64
+	err := r.db.Model(&model.StoryAgentMessage{}).Where("session_id = ? AND id = ?", sessionID, messageID).Count(&count).Error
+	return count > 0, err
+}

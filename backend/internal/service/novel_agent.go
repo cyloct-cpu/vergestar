@@ -489,6 +489,7 @@ func (s *Service) NovelAgentJob(ctx context.Context, userID, jobID string) (Nove
 		body.Job.StoryProjectID = project.ID
 	}
 	s.mirrorNovelAgentJob(userID, body.Job, NovelAgentJobRequestMeta{SessionID: sessionIDOf(body.Job)})
+	s.persistNovelJobAssistantMessage(userID, body.Job)
 	return body.Job, nil
 }
 

@@ -4,7 +4,7 @@ import { App, Button, Form, Input, InputNumber, Modal, Popconfirm, Select, Tag }
 import { ArrowRight, BookOpenText, Check, CheckCircle2, FileOutput, FileText, Film, GitBranch, Hand, History, Lightbulb, Loader2, Pencil, Plus, RotateCcw, Save, SearchCheck, Send, Settings2, Sparkles, Trash2, TrendingUp, X, XCircle, Zap } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router";
 
-import { AgentBubble, AgentConfirmationCard, AgentTaskCard } from "@/pages/novel/agent-ui";
+import { AgentBubble, AgentConfirmationCard, AgentTaskCard, parsePlaySuggestions } from "@/pages/novel/agent-ui";
 import { CollectionGrid, PageHeader, WorkspacePage } from "@/components/layout/workspace-page";
 import { WorkspaceErrorState, WorkspaceLoadingState, WorkspaceState } from "@/components/layout/workspace-state";
 import { ModelPicker } from "@/components/model-picker";
@@ -673,7 +673,28 @@ function NovelAgentHome({ novels, onOpenProject, onCreateProject }: { novels: Pr
                     <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
                         {messages.map((item, index) => (
                             <div key={`${item.role}-${index}`} className="flex flex-col gap-2">
-                                <AgentBubble role={item.role}>{item.text}</AgentBubble>
+                                {item.role === "assistant" ? (() => {
+                                    const parsed = parsePlaySuggestions(item.text);
+                                    return <AgentBubble role="assistant">{parsed.body}</AgentBubble>;
+                                })() : <AgentBubble role="user">{item.text}</AgentBubble>}
+                                {item.role === "assistant" && parsePlaySuggestions(item.text).actions.length ? (
+                                    <div className="flex max-w-[95%] flex-wrap gap-1.5" aria-label="建议行动">
+                                        {parsePlaySuggestions(item.text).actions.map((action) => (
+                                            <button
+                                                key={action}
+                                                type="button"
+                                                disabled={turn.isPending || Boolean(jobProgress)}
+                                                className="rounded-lg border border-primary/30 bg-primary/5 px-3 py-1.5 text-xs text-primary transition-all hover:bg-primary/10 disabled:opacity-40"
+                                                onClick={() => {
+                                                    setMessages((items) => [...items, { role: "user", text: action }]);
+                                                    turn.mutate({ message: action });
+                                                }}
+                                            >
+                                                {action}
+                                            </button>
+                                        ))}
+                                    </div>
+                                ) : null}
                                 {item.skills?.length ? (
                                     <div className="flex max-w-[95%] flex-wrap gap-1">
                                         {item.skills.map((skill) => (
