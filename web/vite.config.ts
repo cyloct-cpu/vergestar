@@ -30,6 +30,23 @@ export default defineConfig({
             },
         },
     },
+    // The local launcher uses `vite preview` for the built UI. Keep the same
+    // backend proxy there as in the dev server; otherwise auth/API requests
+    // fall back to Vite's default target and surface as 502 in the browser.
+    preview: {
+        proxy: {
+            "/api": {
+                target: apiProxyTarget,
+                changeOrigin: true,
+                xfwd: true,
+            },
+            "/oauth/linuxdo/callback": {
+                target: apiProxyTarget,
+                changeOrigin: true,
+                xfwd: true,
+            },
+        },
+    },
     resolve: {
         alias: {
             "@": resolve(webDir, "src"),

@@ -124,6 +124,7 @@ export type ProjectAssetCandidate = {
     name: string;
     category: AssetCategory;
     status: "pending_confirmation" | "confirmed" | "ignored" | string;
+    source?: string;
     detailsJson: string;
     resolvedAssetId?: string;
     createdAt: string;

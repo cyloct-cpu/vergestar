@@ -39,6 +39,7 @@ const CanvasPage = lazy(loadCanvasPage);
 const CanvasProjectPage = lazy(() => import("@/pages/canvas/project"));
 const SharedCanvasPage = lazy(() => import("@/pages/canvas/shared"));
 const CreatePage = lazy(loadCreatePage);
+const NovelPage = lazy(() => import("@/pages/novel"));
 const HomePage = lazy(() => import("@/pages/home"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 const SkillsPage = lazy(() => import("@/pages/skills"));
@@ -98,6 +99,7 @@ export const router = createBrowserRouter([
         children: [
             { path: "/", element: <Navigate to="/create" replace /> },
             { path: "/create", element: <RequireAuth>{deferred(<CreatePage />)}</RequireAuth> },
+            { path: "/novel", element: <RequireAuth>{deferred(<NovelPage />)}</RequireAuth> },
             { path: "/home", element: deferred(<HomePage />) },
             {
                 path: "/tasks",
