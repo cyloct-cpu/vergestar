@@ -61,7 +61,6 @@ type Service struct {
 	workers                    *platform.Worker
 	updateManager              UpdateManager
 	novelAgent                 *novelAgentClient
-	mailSender                 func(emailSettingValue, string, string, string) error
 	readCachesOnce             sync.Once
 	concurrencyReadCache       *platform.BoundedReadCache[string, platform.RuntimeTaskPolicy]
 	textReplayReadCache        *platform.BoundedReadCache[textReplayCacheKey, *TextReplayResult]

@@ -54,11 +54,13 @@ export function revokeComfyBridge(id: string) {
 }
 
 export function controlComfyBridge(id: string, action: "start" | "stop" | "detect", settings: ComfyBridgeControlSettings) {
-    return request<ComfyBridgeControlResult>(apiClient.post(`/comfy-bridges/${encodeURIComponent(id)}/comfy-control`, { action, settings }));
+    return http.post<ComfyBridgeControlResult>(`/comfy-bridges/${encodeURIComponent(id)}/comfy-control`, { action, settings });
 }
 
 export function selectComfyBridgeDirectory(id: string, title: string) {
-    return request<ComfyBridgeDirectoryPickerResult>(
-        apiClient.post(`/comfy-bridges/${encodeURIComponent(id)}/directory-picker`, { title }, { timeout: 120_000 }),
+    return http.post<ComfyBridgeDirectoryPickerResult>(
+        `/comfy-bridges/${encodeURIComponent(id)}/directory-picker`,
+        { title },
+        { timeout: 120_000 },
     );
 }

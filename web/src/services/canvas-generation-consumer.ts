@@ -388,56 +388,27 @@ export type CanvasGenerationEffectInput = {
 };
 
 function generationProjectDelta(input: CanvasGenerationEffectInput, memoryProject: CanvasProject) {
-    const previousNodes = input.previousNodes ?? memoryProject.nodes;
     const stampedNodes = (input.nodes || []).filter((node) => generationEffectApplied(node.metadata || {}, input.effectKey));
     const stampedSessions = (input.chatSessions || []).filter((session) => generationEffectApplied(session, input.effectKey));
 
     if (input.connections && !input.previousConnections) throw new Error("生成副作用缺少连接前置快照");
 
-    // 普通媒体生成只更新节点，不携带画布连接与聊天状态。这里必须以内存中的最新
-    // 状态作为无改动基线，否则增量重放会把全部连接误判为“生成前的空画布”。
-    const previousConnections = input.previousConnections ?? memoryProject.connections;
-    const connections = input.connections ?? previousConnections;
-    const previousChatSessions = input.previousChatSessions ?? memoryProject.chatSessions;
-    const chatSessions = input.chatSessions ?? previousChatSessions;
-    const previousActiveChatId = input.previousActiveChatId !== undefined ? input.previousActiveChatId : memoryProject.activeChatId;
-    const activeChatId = input.activeChatId !== undefined ? input.activeChatId : previousActiveChatId;
-    // 媒体生成副作用只声明“替换/新增结果节点”。提交线程可能拿到落后于内存的
-    // nodes 快照；rebase 以内存为基线合并后，不能把并发更新过的参考图当成用户删除。
-    const effectNodes = input.nodes ? mergeGenerationEffectEntities([...previousNodes, ...memoryProject.nodes], input.nodes) : input.nodes;
     const baseProject: CanvasProject = {
         ...memoryProject,
-        nodes: memoryProject.nodes,
-        connections: memoryProject.connections,
-        chatSessions: previousChatSessions,
-        activeChatId: previousActiveChatId,
+        nodes: input.previousNodes ?? [],
+        connections: input.previousConnections ?? [],
+        chatSessions: input.previousChatSessions ?? [],
+        activeChatId: input.previousActiveChatId !== undefined ? input.previousActiveChatId : memoryProject.activeChatId,
     };
     const localProject: CanvasProject = {
         ...baseProject,
-        nodes: effectNodes ? (input.previousNodes ? effectNodes : stampedNodes) : baseProject.nodes,
-        connections,
-        chatSessions: input.chatSessions ? chatSessions : baseProject.chatSessions,
-        activeChatId,
+        nodes: input.nodes ? (input.previousNodes ? input.nodes : stampedNodes) : baseProject.nodes,
+        connections: input.connections ?? baseProject.connections,
+        chatSessions: input.chatSessions ? (input.previousChatSessions ? input.chatSessions : stampedSessions) : baseProject.chatSessions,
+        activeChatId: input.activeChatId !== undefined ? input.activeChatId : baseProject.activeChatId,
         updatedAt: new Date().toISOString(),
     };
     return { baseProject, localProject, stamped: stampedNodes.length > 0 || stampedSessions.length > 0 };
-}
-
-function mergeGenerationEffectEntities<T extends { id: string }>(baseEntities: T[], effectEntities: T[]) {
-    const effectIds = new Set(effectEntities.map((entity) => entity.id));
-    const result: T[] = [];
-    const seen = new Set<string>();
-    for (const entity of baseEntities) {
-        if (effectIds.has(entity.id) || seen.has(entity.id)) continue;
-        result.push(entity);
-        seen.add(entity.id);
-    }
-    for (const entity of effectEntities) {
-        if (seen.has(entity.id)) continue;
-        result.push(entity);
-        seen.add(entity.id);
-    }
-    return result;
 }
 
 function rebaseCommittedCanvasGenerationOntoLiveProject(scope: string, projectId: string, committedDocument: ReturnType<typeof parseCanvasStorageDocument>, liveBaseProject: CanvasProject, baseRevision: number) {

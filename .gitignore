@@ -39,6 +39,7 @@ dist/
 /web/public/OpenAICanvas-ComfyBridge.exe
 /web/public/OpenAICanvas-ComfyBridge-linux-amd64
 /web/public/OpenAICanvas-ComfyBridge-linux-arm64
+novel-agent/.jobs/
 *.db
 *.db-*
 *.sqlite
@@ -68,3 +69,26 @@ camera_language_guide.md
 
 # Local backend executable; never commit build output.
 backend/cmd/server/server
+
+# Local build and verification artifacts
+.gocache*/
+.gocache-build/
+.gomodcache/
+backend/.gocache*/
+backend/*.exe
+backend/*.exe~
+canvas-agent/native/comfy-bridge/.gocache*/
+canvas-agent/native/comfy-bridge/*.exe
+canvas-agent/native/comfy-bridge/*.exe~
+canvas-agent/native/comfy-bridge/scratch-*.json
+canvas-agent/native/comfy-bridge/scratch_*.go
+canvas-agent/native/comfy-bridge/*before*.exe
+canvas-agent/native/comfy-bridge/*old*.exe
+canvas-agent/web/public/OpenAICanvas-ComfyBridge-*
+tmp_*.py
+codex-task-*.png
+
+# Local diagnostics and scratch files
+backend/cmd/connectivity-test/
+backend/cmd/verifyrelay/
+canvas-agent/native/wf.txt

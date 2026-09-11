@@ -9,8 +9,6 @@ import (
 
 	"gorm.io/gorm"
 	"infinite-canvas/backend/internal/model"
-
-	"gorm.io/gorm"
 )
 
 // 资产来源：媒体导入合成/画布产物自动同步。画布产物用 canvas 以便素材面板分组。

@@ -16,8 +16,7 @@ runLocalRuntimeBootstrap(
         },
     },
     () => {
-        // Keep the public film page independent of workspace and appearance requests.
-        if (/^\/welcome\/?$/.test(window.location.pathname)) void import("./welcome-application");
-        else void bootstrapAppearance().finally(() => import("./application"));
+        // vergestar: 暂不开放 /welcome 品牌首页，统一走工作台应用；恢复时改回按路径分支加载 welcome-application。
+        void bootstrapAppearance().finally(() => import("./application"));
     },
 );

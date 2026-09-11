@@ -678,24 +678,27 @@ export default function AppearanceSettingsPage() {
                         </div>
                     </SettingsSectionCard>
 
-                    <SettingsSectionCard
-                        className="admin-appearance-section"
-                        icon={<Type className="size-4" aria-hidden="true" />}
-                        title="5. 皮肤主题"
-                        description="默认主题保持项目原始样式且不可更改；其他主题可新建、复制、改名、删除，并分别定义浅色、深色、控件样式与交互反馈。"
-                        status={<AdminStatusBadge label={selectedSkin.name} tone="info" />}
-                    >
-                        <SkinThemeEditor
-                            themes={skinThemes}
-                            selectedID={skinId}
-                            disabled={saving || refreshing || restoring}
-                            onSelect={setSkinId}
-                            onCreate={() => duplicateSkin("classic")}
-                            onDuplicate={duplicateSkin}
-                            onDelete={deleteSkin}
-                            onChange={changeSkin}
-                        />
-                    </SettingsSectionCard>
+                    {/* vergestar: 暂不开放皮肤主题配置入口（皮肤数据与编辑器代码保留，恢复时去掉 false 即可）。 */}
+                    {false && (
+                        <SettingsSectionCard
+                            className="admin-appearance-section"
+                            icon={<Type className="size-4" aria-hidden="true" />}
+                            title="5. 皮肤主题"
+                            description="默认主题保持项目原始样式且不可更改；其他主题可新建、复制、改名、删除，并分别定义浅色、深色、控件样式与交互反馈。"
+                            status={<AdminStatusBadge label={selectedSkin.name} tone="info" />}
+                        >
+                            <SkinThemeEditor
+                                themes={skinThemes}
+                                selectedID={skinId}
+                                disabled={saving || refreshing || restoring}
+                                onSelect={setSkinId}
+                                onCreate={() => duplicateSkin("classic")}
+                                onDuplicate={duplicateSkin}
+                                onDelete={deleteSkin}
+                                onChange={changeSkin}
+                            />
+                        </SettingsSectionCard>
+                    )}
                 </div>
             )}
         </AdminPageFrame>

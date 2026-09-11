@@ -1,6 +1,6 @@
 import type { ModelProtocol, ModelProtocolWorkflow } from "@/lib/model-protocols";
 import { buildImageResolutionOptions } from "@/lib/image-resolution-tiers";
-import type { ImageResolutionOption, ImageResolutionTier } from "@/lib/image-resolution-tiers";
+import type { ImageResolutionOption, ImageResolutionTier as ResolutionTierPreset } from "@/lib/image-resolution-tiers";
 
 export type ModelCapabilityConfig = {
     version: number;
@@ -1139,7 +1139,7 @@ export function normalizeImageValue(profile: ImageCapabilityConfig, value: { siz
     return { size, quality, count, transparentBackground };
 }
 
-function imagePresetTierForSelection(profile: ImageCapabilityConfig, size: string): ImageResolutionTier | undefined {
+function imagePresetTierForSelection(profile: ImageCapabilityConfig, size: string): ResolutionTierPreset | undefined {
     if (profile.size.parameter !== "aspect_ratio" || !size || size === "auto") return undefined;
     return profile.size.presets?.find((preset) => preset.ratio === size)?.tier;
 }
