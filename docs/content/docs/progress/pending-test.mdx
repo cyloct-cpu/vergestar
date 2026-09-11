@@ -5,6 +5,16 @@ description: 影策已实现功能的手工验证清单与未确认边界
 
 # 待测试
 
+## InkOS Agent 小说创作整合
+
+- [x] 在运行中的 InkOS Studio 中从自然语言想法开始创建独立对照书，观察 `propose_action`、建书 Pipeline、FoundationReviewer 拒绝与自动重试；对照记录已合并到 `tasks/INKOS_AGENT_INTEGRATION_MASTER_PLAN.md`。
+- [x] Vergestar Novel Agent 已实际返回确认卡，确认后真实调用 InkOS `runAgentSession`、Architect、FoundationReviewer 和 PipelineRunner；Bridge/前端构建及专项测试通过。
+- [x] Bridge Job 元数据落盘使用原子快照；服务重启不会继续伪装未完成任务为 running，模型密钥不进入 Job 快照。
+- [x] `StoryFoundation` Schema v8、用户归属校验和核心文件读取 API/面板已完成；前端 TypeScript 与生产构建通过。
+- [x] 在最新服务进程中确认完整建书成功后 Job 返回 `storyProjectId`，数据库已出现 `novel Project`、`StoryFoundation`、8 个角色资产和 4 条 `StoryMemory`；刷新后的“我的创作”页面跳转/展示仍需补一次浏览器验收。
+- [x] `story/roles/*` 自动生成角色资产，状态/伏笔/情感弧线/卷纲自动生成 `StoryMemory`，重复轮询使用来源去重；`story/outline/*` 的结构化章节计划仍待确认，真实章节文件才会导入 `ProjectUnit`。
+- [ ] 将 Bridge Job 迁移到 Vergestar Task/SSE 真相源，验证服务重启、取消、未知状态、重试和单写入会话。
+
 ## 邮箱找回密码
 
 - [ ] 后端专项测试验证验证码用途隔离、错误和过期验证码拒绝、单次消费、bcrypt 密码更新，以及重置事务撤销全部旧登录会话。
