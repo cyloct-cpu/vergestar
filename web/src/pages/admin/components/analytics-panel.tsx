@@ -1,5 +1,8 @@
+import { App, Button, DatePicker, Drawer, Form, Input, Modal, Select, Tabs, Tag } from "antd";
+import { Tooltip } from "@/components/ui/base/tooltip";
+import { useCountUp } from "@/hooks/use-count-up";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { App, Button, DatePicker, Drawer, Form, Input, Modal, Select, Tabs, Tag, Tooltip } from "antd";
+
 import type { ColumnsType } from "antd/es/table";
 import dayjs, { type Dayjs } from "dayjs";
 import { AlertTriangle, BarChart3, CircleDollarSign, Clock3, Gauge, Pencil, Plus, RefreshCw, Settings2, Trash2, UsersRound, Workflow } from "lucide-react";
@@ -77,6 +80,7 @@ export default function AnalyticsPanel({ users, channels }: Props) {
     const [pricingWorkspaceOpen, setPricingWorkspaceOpen] = useState(false);
     const [pendingPricing, setPendingPricing] = useState<ModelPricing | null | undefined>(undefined);
     const [form] = Form.useForm<PricingFormValues>();
+    const pricingChannelId = Form.useWatch("channelId", form);
     const analyticsPageSize = 20;
 
     const filters = useMemo<AnalyticsFilters>(
@@ -130,7 +134,7 @@ export default function AnalyticsPanel({ users, channels }: Props) {
     const searchUsers = async (keyword: string) => {
         setSearchingUsers(true);
         try {
-            const result = await listAdminUsers({ keyword: keyword.trim() || undefined, page: 1, limit: 50 });
+            const result = await listAdminUsers({ keyword: keyword.trim() || undefined, page: 1, pageSize: 50 });
             setUserOptions(result.users);
         } catch (error) {
             message.error(error instanceof Error ? error.message : "搜索用户失败");
@@ -148,11 +152,13 @@ export default function AnalyticsPanel({ users, channels }: Props) {
 
     const pricingModelOptions = useMemo(() => {
         const names = new Set<string>();
-        const sourceChannels = channels.filter((channel) => channel.enabled !== false);
+        const sourceChannels = channels.filter((channel) => channel.enabled !== false && (!pricingChannelId || channel.id === pricingChannelId));
         sourceChannels.forEach((channel) => channel.models?.forEach((name) => names.add(name)));
-        if (editingPricing?.model) names.add(editingPricing.model);
+        if (editingPricing?.model && (!pricingChannelId || editingPricing.channelId === pricingChannelId)) {
+            names.add(editingPricing.model);
+        }
         return [...names].sort().map((name) => ({ label: name, value: name }));
-    }, [channels, editingPricing?.model]);
+    }, [channels, editingPricing?.channelId, editingPricing?.model, pricingChannelId]);
 
     const preparePricingForm = (pricing: ModelPricing | null) => {
         setEditingPricing(pricing);
@@ -188,9 +194,7 @@ export default function AnalyticsPanel({ users, channels }: Props) {
 
     const handlePricingValuesChange = (changedValues: Partial<PricingFormValues>, values: PricingFormValues) => {
         if (Object.prototype.hasOwnProperty.call(changedValues, "channelId")) {
-            const nextModels = channels
-                .filter((channel) => channel.enabled !== false && (!values.channelId || channel.id === values.channelId))
-                .flatMap((channel) => channel.models || []);
+            const nextModels = channels.filter((channel) => channel.enabled !== false && (!values.channelId || channel.id === values.channelId)).flatMap((channel) => channel.models || []);
             if (values.model && !nextModels.includes(values.model)) form.setFieldValue("model", undefined);
             return;
         }
@@ -444,21 +448,21 @@ export default function AnalyticsPanel({ users, channels }: Props) {
                 <AnalyticsHealthCard
                     icon={<UsersRound className="size-4" />}
                     label="活跃用户"
-                    value={data ? formatNumber(data.kpi.activeUsers) : "--"}
+                    value={data ? <AnimatedHealthValue target={data.kpi.activeUsers} format={formatNumber} /> : "--"}
                     trend={formatCountDelta(currentTrend?.activeUsers, previousTrend?.activeUsers)}
                     detail={data ? `DAU ${formatNumber(data.kpi.dau)} · WAU ${formatNumber(data.kpi.wau)} · MAU ${formatNumber(data.kpi.mau)}` : undefined}
                 />
                 <AnalyticsHealthCard
                     icon={<Workflow className="size-4" />}
                     label="生成任务"
-                    value={data ? formatNumber(data.kpi.generationTasks) : "--"}
+                    value={data ? <AnimatedHealthValue target={data.kpi.generationTasks} format={formatNumber} /> : "--"}
                     trend={formatCountDelta(currentTrend?.tasks, previousTrend?.tasks)}
                     detail={data ? `上游请求 ${formatNumber(data.kpi.upstreamRequests)} · 队列 ${formatNumber(data.kpi.currentQueuedTasks)}` : undefined}
                 />
                 <AnalyticsHealthCard
                     icon={<Gauge className="size-4" />}
                     label="服务质量"
-                    value={data ? percent(data.kpi.successRate) : "--"}
+                    value={data ? <AnimatedHealthValue target={data.kpi.successRate} format={percent} /> : "--"}
                     trend={formatRateDelta(currentTrend?.requestSuccessRate, previousTrend?.requestSuccessRate)}
                     detail={data ? `P95 ${formatDuration(data.kpi.p95DurationMs)}` : undefined}
                     tone={data && data.kpi.successRate < 90 ? "warning" : "success"}
@@ -642,11 +646,30 @@ export default function AnalyticsPanel({ users, channels }: Props) {
                 />
             </Drawer>
 
-            <Modal rootClassName="admin-modal-root admin-analytics-pricing-modal" title={editingPricing ? "编辑模型价格" : "新增模型价格"} open={pricingModalOpen} onCancel={() => setPricingModalOpen(false)} onOk={() => void savePricing()} confirmLoading={savingPricing} okText="保存" cancelText="取消" width={760} zIndex={1200} destroyOnHidden>
+            <Modal
+                rootClassName="admin-modal-root admin-analytics-pricing-modal"
+                title={editingPricing ? "编辑模型价格" : "新增模型价格"}
+                open={pricingModalOpen}
+                onCancel={() => setPricingModalOpen(false)}
+                onOk={() => void savePricing()}
+                confirmLoading={savingPricing}
+                okText="保存"
+                cancelText="取消"
+                width={760}
+                zIndex={1200}
+                destroyOnHidden
+            >
                 <Form form={form} layout="vertical" requiredMark={false} onValuesChange={handlePricingValuesChange}>
                     <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
                         <Form.Item name="model" label="模型" rules={[{ required: true, message: "请选择模型" }]}>
-                            <Select showSearch optionFilterProp="label" placeholder={pricingModelOptions.length ? "选择已启用模型" : "暂无已启用模型"} options={pricingModelOptions} disabled={!pricingModelOptions.length} onChange={handlePricingModelChange} />
+                            <Select
+                                showSearch
+                                optionFilterProp="label"
+                                placeholder={pricingModelOptions.length ? "选择已启用模型" : "暂无已启用模型"}
+                                options={pricingModelOptions}
+                                disabled={!pricingModelOptions.length}
+                                onChange={handlePricingModelChange}
+                            />
                         </Form.Item>
                         <Form.Item name="channelId" label="渠道范围">
                             <Select allowClear placeholder="全部渠道" options={channels.filter((channel) => channel.enabled !== false).map((channel) => ({ label: channel.name, value: channel.id }))} />
@@ -668,6 +691,11 @@ export default function AnalyticsPanel({ users, channels }: Props) {
             </Modal>
         </div>
     );
+}
+
+function AnimatedHealthValue({ target, format }: { target: number; format: (value: number) => string }) {
+    const display = useCountUp(target, 420, 0);
+    return <>{format(display)}</>;
 }
 
 function AnalyticsHealthCard({ icon, label, value, trend, detail, tone = "neutral" }: { icon: ReactNode; label: string; value: ReactNode; trend?: { value: string; tone?: AdminStatusTone }; detail?: string; tone?: AdminStatusTone }) {

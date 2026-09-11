@@ -52,15 +52,65 @@ func RegisterTaskRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		ok(c, task)
 	})
+	r.POST("/timeline/transcriptions", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		policy, available := loadRuntimePolicy(c, svc)
+		if !available || !enforceRateLimit(c, "timeline-ts:"+user.ID, policy.Request.TaskCreatePerMinute, time.Minute) {
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
+		var req service.TimelineTranscriptionCreateRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		task, err := svc.CreateTimelineTranscriptionTask(user.ID, req)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, task)
+	})
+	r.POST("/timeline/renders", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		policy, available := loadRuntimePolicy(c, svc)
+		if !available || !enforceRateLimit(c, "timeline-render:"+user.ID, policy.Request.TaskCreatePerMinute, time.Minute) {
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 64<<20)
+		var req service.TimelineRenderCreateRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		task, err := svc.CreateTimelineRenderTask(user.ID, req)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, task)
+	})
 	r.GET("/tasks", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {
 			failService(c, err)
 			return
 		}
-		limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
+		pageSize, err := parsePositiveQueryInt(c.Query("pageSize"), 50)
+		if err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
 		tasks, err := svc.TasksWithOptions(user.ID, service.TaskListOptions{
-			Limit:      limit,
+			Limit:      pageSize,
 			ProjectID:  c.Query("projectId"),
 			ActiveOnly: c.Query("activeOnly") == "true",
 		})
@@ -109,7 +159,11 @@ func RegisterTaskRoutes(r *gin.RouterGroup, svc *service.Service) {
 			failService(c, err)
 			return
 		}
-		after, _ := strconv.ParseInt(c.DefaultQuery("after", "0"), 10, 64)
+		after, err := taskTextEventCursor(c)
+		if err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
 		result, err := svc.TaskTextReplay(user.ID, c.Param("id"), after)
 		if err != nil {
 			failService(c, err)
@@ -128,7 +182,7 @@ func RegisterTaskRoutes(r *gin.RouterGroup, svc *service.Service) {
 			fail(c, http.StatusBadRequest, err)
 			return
 		}
-		initial, err := svc.TaskTextReplay(user.ID, c.Param("id"), after)
+		initial, err := svc.CachedTaskTextReplay(c.Request.Context(), user.ID, c.Param("id"), after)
 		if err != nil {
 			failService(c, err)
 			return
@@ -262,7 +316,7 @@ func streamTaskTextEvents(c *gin.Context, svc *service.Service, userID string, t
 			c.Writer.Flush()
 		case <-pollTicker.C:
 		}
-		next, err := svc.TaskTextReplay(userID, taskID, after)
+		next, err := svc.CachedTaskTextReplay(c.Request.Context(), userID, taskID, after)
 		if err != nil {
 			writeTaskTextSSE(c, "error", 0, map[string]string{"message": "任务文本流不可用"})
 			return

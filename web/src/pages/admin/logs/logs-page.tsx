@@ -1,4 +1,5 @@
 import { App, Button, Input, Modal, Select } from "antd";
+import { IconButton } from "@/components/ui/base/buttons";
 import type { ColumnsType } from "antd/es/table";
 import { Download, Eye, Play, Search } from "lucide-react";
 import { saveAs } from "file-saver";
@@ -19,6 +20,7 @@ export default function LogsPage() {
     const [searchParams, setSearchParams] = useSearchParams();
     const keyword = searchParams.get("filter") || "";
     const status = normalizeStatus(searchParams.get("status"));
+    const recordType = searchParams.get("recordType") === "download" ? "download" : searchParams.get("recordType") === "all" ? "all" : "request";
     const page = positiveInt(searchParams.get("page"), 1);
     const pageSize = normalizePageSize(searchParams.get("pageSize"));
     const debouncedKeyword = useDebouncedValue(keyword);
@@ -29,7 +31,7 @@ export default function LogsPage() {
     const [detailLogId, setDetailLogId] = useState<string | null>(null);
     const [mediaPreview, setMediaPreview] = useState<{ url: string; kind: "image" | "video"; title: string } | null>(null);
     const requestSequence = useRef(0);
-    const hasFilters = Boolean(keyword || status !== "all");
+    const hasFilters = Boolean(keyword || status !== "all" || recordType !== "request");
 
     const updateUrl = (patch: Record<string, string | number>, replace = false) => {
         const next = new URLSearchParams(searchParams);
@@ -44,7 +46,7 @@ export default function LogsPage() {
     useEffect(() => {
         const sequence = ++requestSequence.current;
         setLoading(true);
-        void listAdminApiLogs({ keyword: debouncedKeyword || undefined, status: status === "all" ? undefined : status, page, limit: pageSize })
+        void listAdminApiLogs({ recordType, keyword: debouncedKeyword || undefined, status: status === "all" ? undefined : status, page, pageSize })
             .then((result) => {
                 if (sequence !== requestSequence.current) return;
                 setLogs(result.logs);
@@ -54,7 +56,7 @@ export default function LogsPage() {
             })
             .catch((error) => sequence === requestSequence.current && message.error(error instanceof Error ? error.message : "读取请求明细失败"))
             .finally(() => sequence === requestSequence.current && setLoading(false));
-    }, [debouncedKeyword, status, page, pageSize]);
+    }, [debouncedKeyword, status, recordType, page, pageSize]);
 
     const columns: ColumnsType<ApiCallLog> = [
         { title: "时间", width: 168, render: (_, log) => formatTime(log.startedAt || log.createdAt) },
@@ -82,7 +84,7 @@ export default function LogsPage() {
         },
         { title: "能力", dataIndex: "capability", width: 88, render: capabilityText },
         { title: "结果", width: 118, render: (_, log) => <MediaResult log={log} onPreview={(url, kind) => setMediaPreview({ url, kind, title: `${capabilityText(log.capability)}结果` })} /> },
-        { title: "调用状态", width: 160, render: (_, log) => <CallStatus log={log} /> },
+        { title: "请求阶段 / 状态", width: 160, render: (_, log) => <CallStatus log={log} /> },
         {
             title: "错误信息",
             width: 260,
@@ -125,10 +127,10 @@ export default function LogsPage() {
     return (
         <AdminPageFrame
             title="请求明细"
-            description="上游调用与积分计费"
+            description="模型生成与结果下载记录；仅计费调用扣除积分"
             actions={
                 <AdminExportButton
-                    exportFile={() => exportAdminApiLogs({ keyword: debouncedKeyword || undefined, status: status === "all" ? undefined : status })}
+                    exportFile={() => exportAdminApiLogs({ recordType, keyword: debouncedKeyword || undefined, status: status === "all" ? undefined : status })}
                     fileName={() => `请求明细-${new Date().toISOString().slice(0, 10)}.csv`}
                     label="导出当前筛选"
                     successMessage="已按当前筛选导出请求明细"
@@ -154,6 +156,8 @@ export default function LogsPage() {
                     </>
                 }
                 toolbarFilters={
+                    <>
+                    <Select aria-label="明细类型" className="w-32" value={recordType} onChange={(value) => updateUrl({ recordType: value, page: 1 })} options={[{ label: "仅请求", value: "request" }, { label: "仅下载", value: "download" }, { label: "全部明细", value: "all" }]} />
                     <Select
                         className="w-32"
                         value={status}
@@ -164,15 +168,16 @@ export default function LogsPage() {
                             { label: "失败", value: "failed" },
                         ]}
                     />
+                    </>
                 }
                 toolbarActive={hasFilters}
-                onReset={() => updateUrl({ filter: "", status: "all", page: 1 })}
+                onReset={() => updateUrl({ filter: "", status: "all", recordType: "request", page: 1 })}
                 batchActions={
                     <AdminBatchBar count={selectedIds.length} onClear={() => setSelectedIds([])}>
                         <AdminExportButton
                             type="primary"
                             size="small"
-                            exportFile={() => exportAdminApiLogs({ ids: selectedIds })}
+                            exportFile={() => exportAdminApiLogs({ recordType, ids: selectedIds })}
                             fileName={() => `请求明细-已选${selectedIds.length}条.csv`}
                             label="导出已选"
                             successMessage={`已导出选中的 ${selectedIds.length} 条请求明细`}
@@ -258,6 +263,7 @@ function formatDuration(value: number) {
 }
 
 function BillingSummary({ log }: { log: ApiCallLog }) {
+    if (!log.billable) return <span className="text-foreground/45">不计费</span>;
     if (!log.billingAvailable) return <span className="text-foreground/35">未扣积分</span>;
     const status = log.billingStatus || "reserved";
     const statusLabel = ({ settled: "已结算", refunded: "已退回", uncertain: "待核对", running: "运行中", reserved: "已预授权" } as const)[status];
@@ -293,7 +299,7 @@ function MediaResult({ log, onPreview }: { log: ApiCallLog; onPreview: (url: str
                 ) : null}
                 {!previewUnavailable && log.mediaCount > 1 ? <span className="absolute bottom-0.5 right-0.5 rounded-sm bg-black/65 px-1 text-[var(--fs-micro)] leading-4 text-white">{log.mediaCount}</span> : null}
             </button>
-            <Button type="text" size="small" className="!size-7 !min-w-7 !p-0" icon={<Download className="size-3.5" />} onClick={() => downloadMedia(url, kind)} title="下载原文件" aria-label="下载原文件" />
+            <IconButton size="sm" variant="ghost" icon={Download} onClick={() => downloadMedia(url, kind)} title="下载原文件" aria-label="下载原文件" />
         </div>
     );
 }
@@ -308,8 +314,14 @@ function CallStatus({ log }: { log: ApiCallLog }) {
     const failed = log.status === "failed" || ["failed", "cancelled", "expired"].includes(providerStatus || "");
     return (
         <div>
+            <div className="mb-1 text-xs font-medium text-foreground/70">{requestKindText(log.requestKind)}</div>
             <AdminStatusBadge label={failed ? "失败" : processing ? "处理中" : "成功"} tone={failed ? "error" : processing ? "warning" : "success"} />
             {log.capability === "video" ? <div className="mt-1 text-xs tabular-nums text-foreground/45">已轮询 {log.pollCount || 0} 次</div> : null}
         </div>
     );
+}
+
+function requestKindText(value: ApiCallLog["requestKind"]) {
+    const labels: Partial<Record<ApiCallLog["requestKind"], string>> = { create: "模型生成", poll: "状态查询", download: "结果下载", repair: "结果修复" };
+    return labels[value] || "上游请求";
 }

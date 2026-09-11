@@ -4,12 +4,14 @@ import { App } from "antd";
 import { buildNodeGenerationContext, hydrateNodeGenerationContext } from "@/components/canvas/canvas-node-generation";
 import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
 import { buildGenerationConfig, isGenerationCanceled } from "@/lib/canvas/canvas-project-generation";
-import { canvasGenerationRequestFingerprint, runCanvasGenerationSubmissionOnce } from "@/lib/canvas/canvas-generation-submission";
+import { canvasGenerationPromptMetadata, canvasGenerationRequestFingerprint, runCanvasGenerationSubmissionOnce } from "@/lib/canvas/canvas-generation-submission";
 import { isGenerationTaskCapacityError } from "@/lib/canvas/canvas-generation-batch";
 import { buildPortraitTexturePrompt } from "@/lib/canvas/canvas-portrait-texture";
+import { buildCameraPrompt } from "@/lib/canvas/camera-prompt-library";
+import { buildTextRewritePrompt } from "@/lib/prompts";
 import { resolveCanvasStyleExecution } from "@/lib/canvas/canvas-style-execution";
 import { generationErrorMessage, generationFailureMetadata } from "@/lib/generation-error";
-import { modelCompatibilityError, modelGroupReferenceLimits, modelRequestOptions, type ModelRequirements } from "@/lib/model-selection";
+import { modelCompatibilityError, modelGroupReferenceLimits, modelPromptLengthError, modelRequestOptions, type ModelRequirements } from "@/lib/model-selection";
 import { navigateToSettings } from "@/lib/settings-navigation";
 import type { Skill } from "@/services/api/skills";
 import { skillRuntime } from "@/services/skill-runtime";
@@ -129,21 +131,26 @@ export function useCanvasGenerationExecutor({
 
                     const sourceTextContent = sourceNode?.type === CanvasNodeType.Text ? sourceNode.metadata?.content?.trim() || "" : "";
                     const editingTextNode = mode === "text" && Boolean(sourceTextContent);
-                    const generationPrompt = mode === "image" && sourceNode?.metadata?.portraitTexture ? buildPortraitTexturePrompt(prompt, sourceNode.metadata.portraitTexture) : prompt;
+                    let generationPrompt = mode === "image" && sourceNode?.metadata?.portraitTexture ? buildPortraitTexturePrompt(prompt, sourceNode.metadata.portraitTexture) : prompt;
+                    if (mode === "image" && sourceNode?.metadata?.cameraControl?.enabled) {
+                        const cameraControl = sourceNode.metadata.cameraControl;
+                        const cameraPrompt = buildCameraPrompt({ cameraId: cameraControl.camera, lensId: cameraControl.lens, focalLengthMm: cameraControl.focalLength, apertureF: cameraControl.aperture });
+                        generationPrompt = `${generationPrompt}\n${cameraPrompt}`;
+                    }
                     const isPreparingEmptyImage = mode === "image" && sourceNode?.type === CanvasNodeType.Image && !sourceNode.metadata?.content;
 
                     let rawGenerationContext: Awaited<ReturnType<typeof hydrateNodeGenerationContext>>;
                     // AutoDL/其他声明式视频协议需要结构化参考素材；只有普通
                     // 模型视频接口才把提示词视为纯文本输入。
                     const usesWorkflowProvider = Boolean(mode !== "text" && generationConfig.taskWorkflowProvider && generationConfig.taskWorkflowProvider !== "model");
-                    // 普通视频协议只保留输入框文本；声明式工作流还要保留连接媒体。
+                    // 普通视频协议只保留输入框文本（显式 @文本 引用仍会展开为真实内容）；声明式工作流还要保留连接媒体。
                     const promptOnly = mode === "video" && !usesWorkflowProvider;
                     try {
                         const baseContext = buildNodeGenerationContext(
                             nodeId,
                             nodesRef.current,
                             connectionsRef.current,
-                            editingTextNode ? `请根据要求修改以下文本。\n\n原文：\n${sourceTextContent}\n\n修改要求：\n${prompt}` : generationPrompt,
+                            editingTextNode ? buildTextRewritePrompt(sourceTextContent, prompt) : generationPrompt,
                             assets,
                             promptOnly,
                         );
@@ -184,6 +191,11 @@ export function useCanvasGenerationExecutor({
                             message.error(errorDetails);
                             return;
                         }
+                    }
+                    const promptLengthError = mode === "video" ? modelPromptLengthError(generationConfig, generationConfig.model, mode, effectivePrompt) : "";
+                    if (promptLengthError) {
+                        message.error(promptLengthError);
+                        return;
                     }
                     const generationContext = { ...rawGenerationContext, prompt: effectivePrompt };
                     if (mode === "audio" && generationContext.characterReferences.length) {
@@ -242,6 +254,7 @@ export function useCanvasGenerationExecutor({
                                           metadata: {
                                               ...node.metadata,
                                               prompt,
+                                              composerContent: prompt,
                                               status: NODE_STATUS_LOADING,
                                               taskStage: "正在准备生成任务",
                                               taskProgress: 0,
@@ -266,7 +279,7 @@ export function useCanvasGenerationExecutor({
                                 node.id === nodeId
                                     ? {
                                           ...node,
-                                          metadata: { ...node.metadata, prompt: statusPrompt, status: NODE_STATUS_LOADING, errorDetails: undefined, generationErrorCode: undefined, resourceReloadAvailable: undefined, failedPromptFingerprint: undefined },
+                                          metadata: { ...node.metadata, ...canvasGenerationPromptMetadata(prompt, statusPrompt), status: NODE_STATUS_LOADING, errorDetails: undefined, generationErrorCode: undefined, resourceReloadAvailable: undefined, failedPromptFingerprint: undefined },
                                       }
                                     : node,
                             ),

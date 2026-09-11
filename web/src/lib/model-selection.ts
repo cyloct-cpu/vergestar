@@ -1,5 +1,6 @@
 import { defaultImageCapabilityConfig, modelCapabilityConfigFor, normalizeImageValue, normalizeVideoValue, STANDARD_IMAGE_SIZE_VALUES, videoDurationAllowed, type ImageCapabilityConfig } from "@/lib/model-capabilities";
 import { videoResolutionComparisonKey } from "@/lib/video-generation-options";
+import { imageSizePresets } from "@/lib/image-size-presets";
 import { modelOptionName, resolveModelChannel, selectableModelsByCapability, type AiConfig, type ModelCapability } from "@/stores/use-config-store";
 
 export type ModelInputSummary = {
@@ -99,6 +100,19 @@ export function modelCompatibilityError(config: AiConfig, model: string, require
 
     if (input.characterCount > 1) return "角色配音一次只能引用一个角色卡";
     return input.imageCount > 0 || input.videoCount > 0 || input.audioCount > 0 ? "音频模型只接受文本或单个角色卡输入" : "";
+}
+
+export function modelPromptLengthError(config: AiConfig, model: string, capability: ModelCapability, prompt: string) {
+    const channel = resolveModelChannel(config, model);
+    const configuredProfile = channel.modelCosts?.find((item) => item.model === modelOptionName(model))?.capabilityConfig;
+    if (!configuredProfile) return "";
+    const profile = modelCapabilityConfigFor(config, model);
+    const maxChars = capability === "text" ? profile.text?.references.promptMaxChars : capability === "image" ? profile.image?.references.promptMaxChars : capability === "video" ? profile.video?.references.promptMaxChars : undefined;
+    if (!maxChars || maxChars <= 0) return "";
+    const actualChars = Array.from(prompt).length;
+    if (actualChars <= maxChars) return "";
+    const label = capability === "text" ? "文本" : capability === "image" ? "图片" : "视频";
+    return `当前${label}模型提示词最多 ${maxChars} 个字符，完整提示词为 ${actualChars} 个字符。系统不会自动截断，请精简当前输入、连线内容或技能上下文后重试`;
 }
 
 export function modelRequestOptions(config: AiConfig, capability: ModelCapability) {
@@ -216,7 +230,8 @@ export function mergedImageCapabilityConfig(config: AiConfig, selected: string):
     const allowCustom = profiles.some((profile) => profile.size.allowCustom || profile.size.values.includes("*"));
     const values = concreteValues.length ? concreteValues : allowCustom ? [...STANDARD_IMAGE_SIZE_VALUES] : [];
     const base = selectedProfile || profiles[0];
-    return { ...base, size: { ...base.size, values, allowCustom } };
+    const presets = profiles.some((profile) => profile.size.presets) ? [...new Map(profiles.flatMap((profile) => imageSizePresets(profile)).map((preset) => [`${preset.tier}:${preset.ratio}:${preset.size}`, preset])).values()] : undefined;
+    return { ...base, size: { ...base.size, values, allowCustom, presets } };
 }
 
 // 切换模型后初始化图片参数为该模型能力默认值，避免旧参数在目标模型族不兼容导致无法切换。
@@ -234,6 +249,8 @@ export function defaultImageParamsForModel(config: AiConfig, model: string): Pic
 
 
 export type ModelGenerationDefaults = Pick<AiConfig, "size" | "quality" | "transparentBackground" | "count" | "videoSeconds" | "vquality" | "videoGenerateAudio" | "videoWatermark">;
+
+type ModelVideoBooleanOptions = Pick<AiConfig, "videoGenerateAudio" | "videoWatermark">;
 
 export function resolveModelGenerationDefaults(
     config: AiConfig,
@@ -281,6 +298,20 @@ export function resolveModelGenerationDefaults(
     }
 
     return {};
+}
+
+export function resolveModelVideoBooleanOptions(
+    config: AiConfig,
+    model: string,
+    explicit: Partial<ModelVideoBooleanOptions> = {},
+    fallback: Partial<ModelVideoBooleanOptions> = {},
+): ModelVideoBooleanOptions {
+    const profile = modelCapabilityConfigFor(config, model).video!;
+    const defaults = resolveModelGenerationDefaults(config, model, "video", explicit, fallback);
+    return {
+        videoGenerateAudio: profile.generateAudio.supported ? defaults.videoGenerateAudio ?? String(profile.generateAudio.default) : "false",
+        videoWatermark: profile.watermark.supported ? defaults.videoWatermark ?? String(profile.watermark.default) : "false",
+    };
 }
 
 export function maxModelInputCapacity(config: AiConfig, capability: "image" | "video", kind: "image" | "video" | "audio") {

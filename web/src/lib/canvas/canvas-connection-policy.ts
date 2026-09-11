@@ -1,5 +1,5 @@
 import { maxModelInputCapacity, type ModelInputSummary } from "@/lib/model-selection";
-import { getNodeGenerationMode, getNodeInputKind } from "@/lib/canvas/node-registry";
+import { getNodeAcceptedInputKinds, getNodeGenerationMode, getNodeInputKind, getNodeMaxInputCount } from "@/lib/canvas/node-registry";
 import { resolveCanvasWorkflowProvider } from "@/lib/canvas/canvas-workflow";
 import type { AiConfig } from "@/stores/use-config-store";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
@@ -18,6 +18,28 @@ export function canvasConnectionError(config: AiConfig, nodes: CanvasNodeData[],
         && Boolean(target.metadata?.comfyBridgeWorkflowId?.trim());
     // Bridge 工作流自带输入槽位和能力，不按普通模型的参考素材容量拦截。
     if (isBridgeMediaTarget) return "";
+    const acceptedInputKinds = getNodeAcceptedInputKinds(target.type);
+    if (acceptedInputKinds.length) {
+        const source = nodes.find((node) => node.id === candidate.fromNodeId);
+        const sourceKind = source ? getNodeInputKind(source.type) : undefined;
+        const isMediaConversion = target.type === CanvasNodeType.MediaConversion;
+        const hasAcceptedSource = isMediaConversion
+            ? source?.type === CanvasNodeType.Image || source?.type === CanvasNodeType.Video
+            : Boolean(sourceKind && acceptedInputKinds.includes(sourceKind));
+        if (!sourceKind || !hasAcceptedSource) {
+            const labels = acceptedInputKinds.map(acceptedInputKindLabel).join("或");
+            return `${isMediaConversion ? "转换" : labels}节点只接受${labels}输入`;
+        }
+        const maxInputCount = getNodeMaxInputCount(target.type);
+        if (maxInputCount) {
+            const inputCount = new Set(
+                [...connections, { id: "candidate", ...candidate }]
+                    .filter((connection) => connection.toNodeId === target.id)
+                    .map((connection) => connection.fromNodeId),
+            ).size;
+            if (inputCount > maxInputCount) return `${isMediaConversion ? "转换" : "当前"}节点最多连接 ${maxInputCount} 个输入`;
+        }
+    }
     const mode = getNodeGenerationMode(target);
     if (!mode) return "";
     const input = connectionInputSummary(target.id, nodes, connections, candidate);
@@ -35,6 +57,13 @@ export function canvasConnectionError(config: AiConfig, nodes: CanvasNodeData[],
     if (mode === "audio" && input.characterCount > 1) return "角色配音一次只能连接一个角色卡";
     if (mode === "audio" && (input.imageCount > 0 || input.videoCount > 0 || input.audioCount > 0)) return "音频生成节点只接受文本或单个角色卡输入";
     return "";
+}
+
+function acceptedInputKindLabel(kind: "image" | "video" | "audio" | "text") {
+    if (kind === "image") return "图片";
+    if (kind === "video") return "视频";
+    if (kind === "audio") return "音频";
+    return "文本";
 }
 
 export function connectionInputSummary(targetNodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[], candidate?: ConnectionCandidate): ModelInputSummary {

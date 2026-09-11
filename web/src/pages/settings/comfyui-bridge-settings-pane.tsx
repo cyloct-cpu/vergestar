@@ -1,4 +1,6 @@
-import { App, Button, Form, Input, Popconfirm, Segmented, Select, Space, Switch } from "antd";
+import { App, Button, Form, Input, Popconfirm, Segmented, Select, Space } from "antd";
+import { Switch } from "@/components/ui/base/switch";
+import { SegmentedControl } from "@/components/ui/base/segmented-control";
 import { Copy, Download, FolderOpen, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
@@ -392,8 +394,8 @@ export function ComfyUIBridgeSettingsPane() {
                                     <h4 className="text-sm font-semibold">安装 Bridge</h4>
                                     <p className="mt-1 text-xs text-foreground/60">在能访问 ComfyUI 的机器上运行；Windows 使用独立程序，Linux 使用对应架构的原生程序，不需要安装 Node.js、npm 或项目源码。</p>
                                 </div>
-                                <Segmented
-                                    size="small"
+                                <SegmentedControl
+                                    size="sm"
                                     value={bridgePlatform}
                                     options={[
                                         { label: "Windows", value: "windows" },
@@ -405,8 +407,8 @@ export function ComfyUIBridgeSettingsPane() {
                             {bridgePlatform === "linux" ? (
                                 <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-foreground/65">
                                     <span>Linux 架构：</span>
-                                    <Segmented
-                                        size="small"
+                                    <SegmentedControl
+                                        size="sm"
                                         value={linuxArchitecture}
                                         options={[
                                             { label: "x64", value: "amd64" },
@@ -527,7 +529,7 @@ export function ComfyUIBridgeSettingsPane() {
                                 <Input value={config.workflowId} placeholder="workflow.json" onChange={(event) => update({ workflowId: event.target.value })} onBlur={(event) => selectWorkflow(event.target.value.trim())} />
                             </Form.Item>
                             <div className="workflow-workspace-tabs lg:col-span-12">
-                                <Segmented
+                                <SegmentedControl
                                     block
                                     value={workspaceMode}
                                     options={[

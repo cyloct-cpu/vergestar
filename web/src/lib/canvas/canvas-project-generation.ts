@@ -11,6 +11,7 @@ import { modelCapabilityConfigFor, workflowFieldCurrentValue, workflowFieldHasSt
 import { modelRequestOptions, resolveCompatibleModel, resolveModelGenerationDefaults, resolveVideoOperation, type ModelGenerationDefaults, type ModelRequirements } from "@/lib/model-selection";
 import { imageMetadata } from "@/lib/canvas/canvas-generation-task-sync";
 import { ensureMediaNodeMinimumSize } from "@/lib/canvas/canvas-node-size";
+import { interruptFileUpload } from "@/lib/canvas/canvas-file-upload";
 import { isCanvasWorkflowProvider, resolveCanvasWorkflowProvider } from "@/lib/canvas/canvas-workflow";
 import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
 import { CanvasNodeType, type CanvasAssistantSession, type CanvasConnection, type CanvasImageGenerationType, type CanvasNodeData, type CanvasNodeMetadata, type CanvasVideoEditOperation } from "@/types/canvas";
@@ -231,6 +232,19 @@ export function buildImageGenerationMetadata(type: CanvasImageGenerationType, co
 }
 
 export function nodeReferenceImage(node: CanvasNodeData): ReferenceImage | null {
+    if (node.type === CanvasNodeType.MediaConversion) {
+        // 转换节点完成后才算图片素材：结果写在 storageKey / resultStorageKey，content 会被清空。
+        const conversion = node.metadata?.mediaConversion;
+        const storageKey = conversion?.resultStorageKey || node.metadata?.storageKey;
+        if (conversion?.status !== "completed" || !storageKey) return null;
+        return {
+            id: node.id,
+            name: node.title || `conversion-${node.id}.png`,
+            type: node.metadata?.mimeType || "image/png",
+            dataUrl: node.metadata?.content || "",
+            storageKey,
+        };
+    }
     if (node.type !== CanvasNodeType.Image || (!node.metadata?.content && !node.metadata?.storageKey)) return null;
     return {
         id: node.id,
@@ -585,16 +599,20 @@ export function supportsVideoReferenceAudio(config: AiConfig) {
 export function resetInterruptedGeneration(nodes: CanvasNodeData[]) {
     const configWidth = NODE_DEFAULT_SIZE[CanvasNodeType.Config].width;
     const configHeight = NODE_DEFAULT_SIZE[CanvasNodeType.Config].height;
-    return nodes.map((node) => {
-        const mediaNode = ensureMediaNodeMinimumSize(node);
+    let changed = false;
+    const reset = nodes.map((node) => {
+        const mediaNode = ensureMediaNodeMinimumSize(interruptFileUpload(node));
         const resizedNode =
             mediaNode.type === CanvasNodeType.Config && (mediaNode.width < configWidth || mediaNode.height < configHeight)
                 ? { ...mediaNode, width: Math.max(mediaNode.width, configWidth), height: Math.max(mediaNode.height, configHeight) }
                 : mediaNode.type === CanvasNodeType.Script && mediaNode.height < NODE_DEFAULT_SIZE[CanvasNodeType.Script].height
                   ? { ...mediaNode, height: NODE_DEFAULT_SIZE[CanvasNodeType.Script].height }
                   : mediaNode;
-        return resizedNode.metadata?.status === "loading" ? { ...resizedNode, metadata: { ...resizedNode.metadata, errorDetails: "正在从任务中心恢复生成状态..." } } : resizedNode;
+        const restoredNode = resizedNode.metadata?.status === "loading" ? { ...resizedNode, metadata: { ...resizedNode.metadata, errorDetails: "正在从任务中心恢复生成状态..." } } : resizedNode;
+        if (restoredNode !== node) changed = true;
+        return restoredNode;
     });
+    return changed ? reset : nodes;
 }
 
 export function isGenerationCanceled(error: unknown) {

@@ -33,6 +33,91 @@ test("announcement editor preserves image and pinned fields through edit and sav
     expect(safetySource).toContain("pinned?: boolean");
 });
 
+test("plugin upload owns native drops and price availability text remains readable", async () => {
+    const [pluginSource, adminCss] = await Promise.all([Bun.file(new URL("../src/pages/plugins/plugin-documentation-modals.tsx", import.meta.url)).text(), Bun.file(new URL("../src/styles/admin-ui.css", import.meta.url)).text()]);
+    const toggleCss = sourceSection(adminCss, ".admin-price-tier-toggle span {", ".admin-model-editor-add-tier.ant-btn {");
+
+    expect(pluginSource).toContain("event.preventDefault()");
+    expect(pluginSource).toContain("onDragOver={(event)");
+    expect(pluginSource).toContain("onDrop={handlePluginDrop}");
+    expect(pluginSource).toContain("点击选择插件文件，也可拖拽到此处");
+    expect(pluginSource).toContain("释放文件以上传插件");
+    expect(pluginSource).toContain("isDraggingPlugin");
+    expect(compactSource(adminCss)).toContain(".admin-price-tier-controls { margin-left: auto;");
+    expect(toggleCss).toContain("overflow-wrap: anywhere;");
+    expect(toggleCss).toContain("white-space: normal;");
+    expect(toggleCss).not.toContain("text-overflow: ellipsis;");
+});
+
+test("model reference limits use compact rows only inside the admin editor", async () => {
+    const css = await Bun.file(new URL("../src/styles/admin-ui.css", import.meta.url)).text();
+    const numberField = sourceSection(css, ".admin-model-editor-references .admin-capability-number-field {", ".admin-model-editor-references .admin-capability-boolean-field {");
+    expect(numberField).toContain("grid-template-columns: minmax(0, 1fr) 80px;");
+    expect(numberField).toContain("min-height: 32px;");
+    expect(numberField).toContain("align-items: center;");
+    const switches = sourceSection(css, ".admin-model-editor-references .admin-capability-boolean-field label {", "@media (min-width: 601px)");
+    expect(switches).toContain("display: flex;");
+    expect(compactSource(css)).toContain(".admin-model-editor-references .admin-capability-reference-grid { align-items: start;");
+    expect(compactSource(css)).toContain(".admin-model-editor-modal .admin-capability-reference-grid { grid-template-columns: minmax(0, 1fr);");
+});
+
+test("model editor presents protocols in a searchable inline radio browser instead of a dropdown", async () => {
+    const [source, css] = await Promise.all([
+        Bun.file(new URL("../src/pages/admin/components/channel-model-editor.tsx", import.meta.url)).text(),
+        Bun.file(new URL("../src/styles/admin-ui.css", import.meta.url)).text(),
+    ]);
+    const protocolSection = sourceSection(compactSource(source), '<Form.Item className="admin-model-protocol-field"', "{protocolError && (");
+
+    expect(protocolSection).toContain("<ModelProtocolBrowser");
+    expect(protocolSection).not.toContain("<Select");
+    expect(compactSource(css)).toContain(".admin-model-protocol-field { grid-column: 1 / -1;");
+});
+
+test("channel model fetch requires explicit selection before import", async () => {
+    const [componentSource, apiSource, adminCssSource] = await Promise.all([
+        Bun.file(new URL("../src/pages/admin/components/channel-model-manager.tsx", import.meta.url)).text(),
+        Bun.file(new URL("../src/services/api/wallet.ts", import.meta.url)).text(),
+        Bun.file(new URL("../src/styles/admin-ui.css", import.meta.url)).text(),
+    ]);
+    const component = compactSource(componentSource);
+
+    expect(apiSource).toContain("http.post<{ models: string[] }>(`/admin/channels/${encodeURIComponent(channelId)}/models/fetch`)");
+    expect(apiSource).toContain("http.post<{ models: string[]; added: number }>(`/admin/channels/${encodeURIComponent(channelId)}/models/import`, { models })");
+    expect(component).toContain('title="选择要导入的模型"');
+    expect(component).toContain("默认已全选");
+    expect(component).toContain("setFetchPreviewOpen(true)");
+    expect(component).toContain("setSelectedFetchModels(result.models)");
+    expect(component).toContain("已选择 {selectedFetchModels.length} / {fetchPreviewModels.length} 个模型");
+    expect(component).toContain("disabled={importing || allFetchModelsSelected}");
+    expect(component).toContain("onClick={() => setSelectedFetchModels(fetchPreviewModels)}");
+    expect(component).toContain("disabled={importing || selectedFetchModels.length === 0}");
+    expect(component).toContain("onClick={() => setSelectedFetchModels([])}");
+    expect(component).toContain("取消全选");
+    expect(component).toContain("disabled={importing}");
+    expect(component).toContain("importAdminChannelModels(channel.id, selectedFetchModels)");
+    expect(component).toContain("disabled={!selectedFetchModels.length}");
+    expect(component).not.toContain("disabled: alreadyExists");
+    expect(component).not.toContain("const result = await fetchAdminChannelModels(channel.id); await reload();");
+    expect(adminCssSource).toContain(".admin-model-import-modal .channel-model-import-picker .ant-checkbox-checked");
+    expect(adminCssSource).toContain("border-color: var(--control-check-fg) !important");
+});
+
+test("channel model manager supports bounded atomic batch deletion", async () => {
+    const [componentSource, apiSource] = await Promise.all([Bun.file(new URL("../src/pages/admin/components/channel-model-manager.tsx", import.meta.url)).text(), Bun.file(new URL("../src/services/api/wallet.ts", import.meta.url)).text()]);
+    const component = compactSource(componentSource);
+
+    expect(apiSource).toContain("http.post<{ deleted: number }>(`/admin/channels/${encodeURIComponent(channelId)}/models/batch-delete`, { modelIds })");
+    expect(component).toContain("<AdminBatchBar count={selectedModelIds.length}");
+    expect(component).toContain("rowSelection:");
+    expect(component).toContain("selectedRowKeys: selectedModelIds");
+    expect(component).toContain("preserveSelectedRowKeys: true");
+    expect(component).toContain("setSelectedModelIds(next.slice(0, 100))");
+    expect(component).toContain("deleteAdminChannelModels(channel.id, selectedModelIds)");
+    expect(component).toContain("okButtonProps: { danger: true }");
+    expect(component).toContain("本次就不会删除任何模型");
+    expect(component).toContain("批量删除");
+});
+
 test("analytics keeps fixed range presets distinct and uses enabled channel models for pricing", async () => {
     const source = compactSource(await Bun.file(new URL("../src/pages/admin/components/analytics-panel.tsx", import.meta.url)).text());
 
@@ -45,7 +130,10 @@ test("analytics keeps fixed range presets distinct and uses enabled channel mode
     expect(source).toContain("onChange={handlePricingModelChange}");
     expect(source).toContain('hasOwnProperty.call(changedValues, "model")');
     expect(source).toContain('if (matchingChannels.length) form.setFieldValue("channelId", matchingChannels[0].id)');
-    expect(source).toContain("const sourceChannels = channels.filter((channel) => channel.enabled !== false)");
+    expect(source).toContain("const sourceChannels = channels.filter(");
+    expect(source).toContain('Form.useWatch("channelId", form)');
+    expect(source).toContain("pricingChannelId");
+    expect(source).toContain("channel.id === pricingChannelId");
     expect(source).toContain('inputMode="decimal"');
     expect(source).toContain('className="admin-analytics-price-input"');
     expect(source).toContain('className="admin-analytics-price-field"');
@@ -189,9 +277,15 @@ test("request logs display user credit billing independently from upstream cost"
 
     const billingSummary = sourceSection(listSource, "function BillingSummary", "function MediaResult");
     expect(listSource).toContain('title: "积分计费"');
+    expect(listSource).toContain('title: "请求阶段 / 状态"');
+    expect(listSource).toContain('description="模型生成与结果下载记录；仅计费调用扣除积分"');
     expect(billingSummary).toContain("billingAmountMicrocredits");
     expect(billingSummary).toContain("billingAvailable");
+    expect(billingSummary).toContain("!log.billable");
+    expect(billingSummary).toContain("不计费");
     expect(billingSummary).not.toContain("costAvailable");
+    expect(detailSource).toContain('["请求阶段", requestKindText(log.requestKind)]');
+    expect(detailSource).toContain('["计费属性", log.billable ? "计费调用" : "不计费"]');
     expect(detailSource).toContain('["积分计费", billingText(log)]');
     expect(detailSource).toContain('["上游成本", log.costAvailable');
     expect(apiSource).toContain("billingAmountMicrocredits: number");

@@ -1,4 +1,6 @@
-import { App, Button, Drawer, Form, Input, Modal, Select, Switch, Tooltip, Typography } from "antd";
+import { App, Button, Drawer, Form, Input, Modal, Select, Typography } from "antd";
+import { Switch } from "@/components/ui/base/switch";
+import { SegmentedControl } from "@/components/ui/base/segmented-control";
 import { Bug, LayoutGrid, List, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
@@ -8,6 +10,7 @@ import { ListToolbar, PageHeader, PaginationBar, WorkspacePage } from "@/compone
 import { WorkspaceState } from "@/components/layout/workspace-state";
 import { CONTENT_MODERATION_ERROR_CODE, generationErrorMessage, isContentModerationError } from "@/lib/generation-error";
 import { formatTaskKind, isGenerationTaskSubmissionUncertain, operationOptions, statusLabel } from "@/lib/generation-task-display";
+import { buildVideoOperationPrompt } from "@/lib/prompts";
 import { backendProviderConfig, logicalModelIDForConfig } from "@/services/api/generation-task";
 
 import { createAgentSession, createGenerationTask, deleteGenerationTask, formatTaskLog, listGenerationTasks, listTaskLogs, queryFailedVideoProviderTask, queryGenerationTask, refreshGenerationTaskStatus, retryGenerationTask, type CreateTaskInput, type GenerationTask, type TaskLog } from "@/services/api/task-center";
@@ -52,7 +55,7 @@ function taskStatusFilter(value: string | null): TaskStatusFilter {
 }
 
 export default function TasksPage() {
-    const { message } = App.useApp();
+    const { message, modal } = App.useApp();
     const navigate = useNavigate();
     const [searchParams, setSearchParams] = useSearchParams();
     const effectiveConfig = useEffectiveConfig();
@@ -189,9 +192,16 @@ export default function TasksPage() {
             return;
         }
         let cancelled = false;
-        void listProjects().then((result) => {
-            if (!cancelled) setDomainProjects(result.projects);
-        }).catch(() => undefined);
+        void listProjects()
+            .then((result) => {
+                if (!cancelled) setDomainProjects(result.projects);
+            })
+            .catch((error) => {
+                if (cancelled) return;
+                // 领域项目只是任务页的辅助筛选数据；读取失败不能阻断任务列表，但必须清空旧快照并留下可检索的诊断。
+                setDomainProjects([]);
+                console.warn("加载任务关联项目失败，已禁用本次项目筛选", error);
+            });
         return () => {
             cancelled = true;
         };
@@ -249,7 +259,6 @@ export default function TasksPage() {
                 const [detail, logs] = await Promise.all([queryGenerationTask(task.id), listTaskLogs(task.id)]);
                 setDetailTask(detail);
                 setTaskLogs(logs);
-                if (await syncGenerationTaskToCanvasStore(detail)) message.success("已同步到画布");
             } catch (error) {
                 message.error(error instanceof Error ? error.message : "任务详情加载失败");
             } finally {
@@ -314,7 +323,7 @@ export default function TasksPage() {
             message.warning("任务正在执行，不能删除本机记录；请等待任务完成");
             return;
         }
-        Modal.confirm({
+        modal.confirm({
             title: "删除本机任务记录？",
             content: "这只会删除本机任务记录，不会删除已生成的素材。",
             okText: "删除本机记录",
@@ -405,7 +414,7 @@ export default function TasksPage() {
                     input: {
                         source: "tasks-page",
                         mode: values.operation === "compare_versions" ? "workflow" : "video",
-                        prompt: buildVideoOperationPrompt(values.operation, values.prompt),
+                        prompt: buildVideoOperationPrompt(values.operation, values.prompt, operationOptions.find((item) => item.value === values.operation)?.label || "其他视频操作"),
                         config: values.operation === "compare_versions" ? undefined : backendProviderConfig(requestConfig),
                         metadata: { videoEditOperation: values.operation },
                     },
@@ -436,17 +445,21 @@ export default function TasksPage() {
                             <div className="flex flex-wrap items-center gap-2.5">
                                 {viewMode === "list" ? (
                                     <label className="inline-flex cursor-pointer items-center gap-2 text-xs text-foreground/55">
-                                        <Switch size="small" checked={groupEnabled} onChange={changeGroupEnabled} />
+                                        <Switch size="sm" checked={groupEnabled} onChange={changeGroupEnabled} />
                                         <span>按画布分组</span>
                                     </label>
                                 ) : null}
-                                <div className="task-view-switch" role="group" aria-label="任务视图">
-                                    <Tooltip title="列表视图">
-                                        <Button type={viewMode === "list" ? "primary" : "text"} size="small" aria-label="列表视图" aria-pressed={viewMode === "list"} icon={<List className="size-3.5" />} onClick={() => changeViewMode("list")} />
-                                    </Tooltip>
-                                    <Tooltip title="网格视图">
-                                        <Button type={viewMode === "grid" ? "primary" : "text"} size="small" aria-label="网格视图" aria-pressed={viewMode === "grid"} icon={<LayoutGrid className="size-3.5" />} onClick={() => changeViewMode("grid")} />
-                                    </Tooltip>
+                                <div className="task-view-switch">
+                                    <SegmentedControl<TaskViewMode>
+                                        ariaLabel="任务视图"
+                                        size="sm"
+                                        value={viewMode}
+                                        options={[
+                                            { value: "list", icon: <List className="size-3.5" />, title: "列表视图" },
+                                            { value: "grid", icon: <LayoutGrid className="size-3.5" />, title: "网格视图" },
+                                        ]}
+                                        onChange={changeViewMode}
+                                    />
                                 </div>
                             </div>
                         )}
@@ -589,7 +602,7 @@ function reconcileTaskSummaries(current: GenerationTask[], next: GenerationTask[
     let changed = false;
     const reconciled = next.map((task) => {
         const previous = currentById.get(task.id);
-        if (previous?.updatedAt === task.updatedAt && previous.previewUrl === task.previewUrl && previous.billing?.status === task.billing?.status && previous.billing?.amountMicrocredits === task.billing?.amountMicrocredits) return previous;
+        if (previous?.updatedAt === task.updatedAt && previous.previewUrl === task.previewUrl && previous.previewPosterUrl === task.previewPosterUrl && previous.billing?.status === task.billing?.status && previous.billing?.amountMicrocredits === task.billing?.amountMicrocredits) return previous;
         changed = true;
         return task;
     });
@@ -803,10 +816,4 @@ function formatTaskJson(value?: string) {
     } catch {
         return value;
     }
-}
-
-function buildVideoOperationPrompt(operation: string, prompt: string) {
-    const operationLabel = operationOptions.find((item) => item.value === operation)?.label || "其他视频操作";
-    if (operation === "compare_versions") return `请对以下视频结果版本做对比分析，输出推荐版本、差异点和修改建议：\n${prompt}`;
-    return `视频编辑任务：${operationLabel}\n创作要求：${prompt}`;
 }

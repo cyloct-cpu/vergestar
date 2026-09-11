@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { persist, type PersistStorage, type StorageValue } from "zustand/middleware";
 
 import { nanoid } from "nanoid";
-import { normalizeCanvasAppearance, readCanvasAppearanceDefault, type CanvasAppearance } from "@/lib/canvas/canvas-appearance";
+import { DEFAULT_CANVAS_BACKGROUND_MODE, normalizeCanvasAppearance, readCanvasAppearanceDefault, type CanvasAppearance } from "@/lib/canvas/canvas-appearance";
 import { parseCanvasStorageDocument, rebaseCanvasProjects, serializeCanvasStorageDocument, type CanvasStorageDocument } from "@/lib/canvas/canvas-storage-revision";
 import { localForageStorageForScope } from "@/lib/localforage-storage";
 import { getActiveUserScope } from "@/lib/user-scope";
@@ -95,9 +95,15 @@ function runWithBrowserCanvasStorageLock<T>(scope: string, operation: () => Prom
     return operation();
 }
 
+/**
+ * 串行化同一用户作用域的画布持久化，并在一次失败后允许队列继续前进。
+ *
+ * `pending` 必须把当前写入的真实结果返回给调用方；只有前一个 tail 的失败被
+ * 转换成已处理的 void，才不会让一次旧失败永久毒化后续保存队列。
+ */
 export function withCanvasStorePersistenceLock<T>(scope: string, operation: () => Promise<T>, options: CanvasStorageLockOptions = {}): Promise<T> {
     const previous = canvasStorageTails.get(scope) ?? Promise.resolve();
-    const pending = previous.catch(() => undefined).then(() => runWithBrowserCanvasStorageLock(scope, operation, options));
+    const pending = previous.then(() => undefined, () => undefined).then(() => runWithBrowserCanvasStorageLock(scope, operation, options));
     const tail = pending.then(
         () => undefined,
         () => undefined,
@@ -260,6 +266,7 @@ function pendingGenerationAttempt(scope: string, projectId: string, effectKeys?:
 }
 
 function ordinaryCanvasProjectSnapshot(scope: string, project: CanvasProject, durableProject: CanvasProject | undefined) {
+    if (!hasGenerationEffectKeys(project) && !hasGenerationEffectKeys(durableProject)) return project;
     const durableNodes = new Map((durableProject?.nodes || []).map((node) => [node.id, node]));
     const durableSessions = new Map((durableProject?.chatSessions || []).map((session) => [session.id, session]));
     let changed = false;
@@ -288,7 +295,7 @@ function ordinaryCanvasProjectSnapshot(scope: string, project: CanvasProject, du
             }
             continue;
         }
-        if (JSON.stringify(localKeys) === JSON.stringify(durableKeys)) {
+        if (sameGenerationEffectKeys(localKeys, durableKeys)) {
             nodes.push(node);
             continue;
         }
@@ -318,7 +325,7 @@ function ordinaryCanvasProjectSnapshot(scope: string, project: CanvasProject, du
             }
             continue;
         }
-        if (JSON.stringify(session.generationEffectKeys) === JSON.stringify(durableKeys)) {
+        if (sameGenerationEffectKeys(session.generationEffectKeys, durableKeys)) {
             chatSessions.push(session);
             continue;
         }
@@ -339,6 +346,19 @@ function ordinaryCanvasProjectSnapshot(scope: string, project: CanvasProject, du
         };
     }
     return changed ? { ...project, nodes, chatSessions } : project;
+}
+
+function hasGenerationEffectKeys(value: CanvasProject | undefined) {
+    if (!value) return false;
+    return value.nodes.some((node) => Boolean(node.metadata?.generationEffectKeys?.length))
+        || value.chatSessions.some((session) => Boolean(session.generationEffectKeys?.length));
+}
+
+function sameGenerationEffectKeys(left?: readonly string[], right?: readonly string[]) {
+    if (left === right) return true;
+    if (!left?.length && !right?.length) return true;
+    if (!left || !right || left.length !== right.length) return false;
+    return left.every((value, index) => value === right[index]);
 }
 
 function ordinaryCanvasPersistenceState(scope: string, state: PersistedCanvasState, durableProjects: CanvasProject[]) {
@@ -430,7 +450,10 @@ const canvasStorage: PersistStorage<CanvasStore> = {
         clearCanvasSaveTimer(scope);
         const timer = setTimeout(() => {
             if (canvasSaveTimers.get(scope) === timer) canvasSaveTimers.delete(scope);
-            void writeQueuedCanvasPersist(scope, token).catch(() => undefined);
+            void writeQueuedCanvasPersist(scope, token).catch((error) => {
+                // 自动保存无法把异常返回给原始状态更新调用方，但失败队列仍会保留给下一次写入或显式 flush 重试。
+                console.error("画布本地持久化失败，已保留待写队列", { scope, error });
+            });
         }, 400);
         canvasSaveTimers.set(scope, timer);
     },
@@ -469,7 +492,7 @@ export const useCanvasStore = create<CanvasStore>()(
                     chatSessions: [],
                     activeChatId: null,
                     appearance: appearanceDefault?.appearance,
-                    backgroundMode: appearanceDefault?.backgroundMode || "lines",
+                    backgroundMode: appearanceDefault?.backgroundMode || DEFAULT_CANVAS_BACKGROUND_MODE,
                     showImageInfo: false,
                     viewport: initialViewport,
                     directorScenes: [],
@@ -491,7 +514,7 @@ export const useCanvasStore = create<CanvasStore>()(
                     activeChatId: source.activeChatId || null,
                     starterMode: source.starterMode,
                     appearance: source.appearance ? normalizeCanvasAppearance(source.appearance, "dark") : undefined,
-                    backgroundMode: source.backgroundMode || "lines",
+                    backgroundMode: source.backgroundMode || DEFAULT_CANVAS_BACKGROUND_MODE,
                     showImageInfo: source.showImageInfo || false,
                     viewport: source.viewport || initialViewport,
                     directorScenes: source.directorScenes || [],

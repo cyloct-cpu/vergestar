@@ -2,6 +2,7 @@ import { canvasNodeToAsset, declaredCanvasNodeAssetCategory, findCanvasNodeAsset
 import { canvasVideoAssetPreviewUrl } from "@/lib/canvas/canvas-media-preview";
 import { readImageMeta } from "@/lib/image-utils";
 import { parseBackendGenerationResult, type BackendGenerationResult } from "@/services/api/generation-task";
+import { ApiError } from "@/services/api/request";
 import { linkProjectAsset, moveProjectAsset, updateProjectAssetCategory } from "@/services/api/projects";
 import type { GenerationTask, GenerationTaskOutput } from "@/services/api/task-center";
 import { getMediaBlob, resolveMediaUrl, setMediaBlob } from "@/services/file-storage";
@@ -41,6 +42,47 @@ export type CanvasNodeAssetResult = {
 };
 
 const pendingAssetSyncs = new Map<string, Promise<CanvasNodeAssetResult>>();
+const DEFAULT_RATE_LIMIT_RETRY_MS = 60_000;
+const MAX_RATE_LIMIT_RETRY_MS = 5 * 60_000;
+
+type CanvasAssetSyncRetryOptions = {
+    signal?: AbortSignal;
+    maxRetries?: number;
+    wait?: (delayMs: number, signal?: AbortSignal) => Promise<void>;
+};
+
+function waitForCanvasAssetSyncRetry(delayMs: number, signal?: AbortSignal) {
+    return new Promise<void>((resolve, reject) => {
+        if (signal?.aborted) {
+            reject(new DOMException("The operation was aborted", "AbortError"));
+            return;
+        }
+        const timer = globalThis.setTimeout(() => {
+            signal?.removeEventListener("abort", onAbort);
+            resolve();
+        }, delayMs);
+        const onAbort = () => {
+            globalThis.clearTimeout(timer);
+            reject(new DOMException("The operation was aborted", "AbortError"));
+        };
+        signal?.addEventListener("abort", onAbort, { once: true });
+    });
+}
+
+export async function retryCanvasAssetSyncAfterRateLimit<T>(operation: () => Promise<T>, options: CanvasAssetSyncRetryOptions = {}): Promise<T> {
+    const maxRetries = Math.max(0, options.maxRetries ?? 2);
+    const wait = options.wait ?? waitForCanvasAssetSyncRetry;
+    for (let attempt = 0; ; attempt += 1) {
+        throwIfAborted(options.signal);
+        try {
+            return await operation();
+        } catch (error) {
+            if (!(error instanceof ApiError) || error.status !== 429 || attempt >= maxRetries) throw error;
+            const delayMs = Math.min(MAX_RATE_LIMIT_RETRY_MS, Math.max(0, error.retryAfterMs ?? DEFAULT_RATE_LIMIT_RETRY_MS));
+            await wait(delayMs, options.signal);
+        }
+    }
+}
 
 export function ensureCanvasNodeAsset(options: EnsureCanvasNodeAssetOptions) {
     const scope = getActiveUserScope();
@@ -71,7 +113,12 @@ async function persistCanvasNodeAsset(options: EnsureCanvasNodeAssetOptions): Pr
         store.updateAsset(asset.id, { category: declaredCategory });
         asset = useAssetStore.getState().assets.find((item) => item.id === asset?.id) || asset;
     }
-    if (!options.domainProjectId) return { assetId: asset.id, created, linkedToProject: false };
+    if (!options.domainProjectId) {
+        // 个人画布也必须在返回成功前把素材提交到服务端，不能只依赖延迟自动同步。
+        await saveRemoteUserDataNow();
+        throwIfAborted(options.signal);
+        return { assetId: asset.id, created, linkedToProject: false };
+    }
     await syncAssetToProject(asset.id, options.domainProjectId, declaredCategory, options.folderId, options.signal);
     return { assetId: asset.id, created, linkedToProject: true };
 }

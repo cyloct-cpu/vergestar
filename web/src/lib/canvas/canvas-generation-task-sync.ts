@@ -20,6 +20,7 @@ export function generationTaskInput(task: GenerationTask) {
             metadata?: {
                 nodeId?: string;
                 sourceNodeId?: string;
+                domainProjectId?: string;
                 workflowProvider?: CanvasNodeMetadata["workflowProvider"];
                 runningHubWorkflowId?: string;
                 runningHubWorkflowKind?: CanvasNodeMetadata["runningHubWorkflowKind"];
@@ -33,7 +34,7 @@ export function generationTaskInput(task: GenerationTask) {
 }
 
 export function generationTaskNodeId(task: GenerationTask) {
-    return generationTaskInput(task)?.metadata?.nodeId || "";
+    return task.clientContext?.nodeId || generationTaskInput(task)?.metadata?.nodeId || "";
 }
 
 export function generationTaskMode(task: GenerationTask, fallback?: CanvasGenerationMode): CanvasGenerationMode {
@@ -270,8 +271,11 @@ function applySuccessfulVersionSelection(nodes: CanvasNodeData[], updatedNode: C
 
 export async function syncGenerationTaskToCanvasStore(task: GenerationTask) {
     if (task.status !== "succeeded" || !task.projectId) return false;
-    const store = useCanvasStore.getState();
-    const project = store.projects.find((item) => item.id === task.projectId);
+    // 短剧任务使用业务项目 ID，不能拿它请求同名的画布项目。
+    const domainProjectId = task.clientContext?.domainProjectId || generationTaskInput(task)?.metadata?.domainProjectId;
+    if (domainProjectId === task.projectId || !generationTaskNodeId(task)) return false;
+    const { loadCanvasProjectForEditing } = await import("@/services/user-data-sync");
+    const project = await loadCanvasProjectForEditing(task.projectId);
     if (!project) return false;
     const node = findGenerationTaskNode(project.nodes, task);
     if (!node) return false;

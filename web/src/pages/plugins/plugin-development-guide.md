@@ -1,6 +1,6 @@
 # 插件开发协议说明
 
-影策插件采用“一份 Manifest 声明全部能力”的方式开发。一个插件包可以同时贡献渠道 Provider、工作流、画布节点、转换器、素材源、Agent、命令等能力，但它们共享同一个版本、权限、启用状态和卸载生命周期。
+宿主只有一种插件：一个版本化 Manifest 描述一个插件包可以向宿主贡献的全部能力。Provider、工作流、画布节点、媒体转换、素材源、Agent 和命令都写在同一个 `contributes` 下；运行时可以不同，但不会再出现“协议插件”和“UI 插件”两套清单。
 
 当前协议版本是 `yingce.plugin/v1`。上传插件使用 ZIP 容器，后端按 Manifest 做校验和执行映射，不会执行上传包中的业务代码。
 
@@ -450,6 +450,10 @@ request.resolution | omit_auto
 - 插件申请的权限必须是最小权限。
 
 ## 15. 开发建议
+
+请求字段右侧只能引用宿主统一请求，例如 `request.prompt`、`request.model`、`request.duration`、`request.extra`。声明式字段也支持安全的对象/数组路径（例如 `request.images.0.url`）和通用字符串变换（`|trim`、`|lower`、`|upper`），不执行插件代码。渠道声明的枚举值由画布完整保留，插件可使用通用大小写变换适配上游，不应要求宿主增加渠道专用归一化。字段解析为空时会省略该字段，适合映射可选参考素材。Provider 如果把 `requiresPublicMediaUrls` 设为 `true`，宿主会在请求前把用户资源转换为短期签名公网 URL。响应映射支持对象路径和数组下标，并可用 `errorPaths` 声明上游错误码路径。同步 provider 只需要 `create` 和 `response`；异步 provider 再声明 `poll`。
+
+结果 URL 如果是短期地址，必须设置 `resultEphemeral: true`。宿主会在任务完成后立即下载并保存资源，画布和任务记录只保存宿主资源引用。
 
 1. 先确认目标服务只需要 HTTP 请求映射。如果是，优先做 `providers`。
 2. 使用异步任务时，明确 `create` 返回任务 ID，`poll` 按 `{{taskId}}` 查询。

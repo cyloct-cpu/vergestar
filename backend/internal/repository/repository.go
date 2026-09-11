@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -52,6 +53,10 @@ type UserStorageUsage struct {
 
 func New(db *gorm.DB) *Repository {
 	return &Repository{db: db}
+}
+
+func (r *Repository) WithContext(ctx context.Context) *Repository {
+	return &Repository{db: r.db.WithContext(ctx)}
 }
 
 func (r *Repository) Dialect() string {
@@ -428,7 +433,7 @@ func (r *Repository) ClaimNextTask(owner string, leaseDuration time.Duration) (*
 
 func (r *Repository) RenewTaskLease(id string, owner string, leaseDuration time.Duration) error {
 	result := r.db.Model(&model.Task{}).
-		Where("id = ? AND status = ? AND lease_owner = ?", id, model.TaskStatusRunning, owner).
+		Where("id = ? AND status = ? AND lease_owner = ? AND lease_expires_at > ?", id, model.TaskStatusRunning, owner, time.Now()).
 		Updates(map[string]any{"lease_expires_at": time.Now().Add(leaseDuration), "updated_at": time.Now()})
 	if result.Error != nil {
 		return result.Error
@@ -449,8 +454,8 @@ func (r *Repository) UpdateTaskProviderState(id string, providerRequestID string
 
 func (r *Repository) DeferRunningTaskForProviderPoll(id string, owner string, stage string, delay time.Duration) error {
 	now := time.Now()
-	result := r.db.Model(&model.Task{}).
-		Where("id = ? AND status = ? AND lease_owner = ?", id, model.TaskStatusRunning, owner).
+	result := taskLeaseWriter(r.db.Model(&model.Task{}), owner).
+		Where("id = ? AND status = ?", id, model.TaskStatusRunning).
 		Updates(map[string]any{
 			"stage": stage, "error": "", "completed_at": nil, "next_poll_at": now.Add(delay),
 			"lease_owner": "", "lease_expires_at": nil, "updated_at": now,
@@ -500,6 +505,27 @@ func (r *Repository) UpdateTaskProgress(id string, stage string, progress int) e
 	}).Error
 }
 
+func (r *Repository) UpdateTaskProgressForLease(id string, owner string, stage string, progress int) error {
+	result := taskLeaseWriter(r.db.Model(&model.Task{}), owner).
+		Where("id = ? AND status = ?", id, model.TaskStatusRunning).
+		Updates(map[string]any{"stage": stage, "progress": progress, "updated_at": time.Now()})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return ErrTaskStateConflict
+	}
+	return nil
+}
+
+// 无租约任务仅能写无租约记录；有租约的执行者必须仍持有本次领取的有效 owner。
+func taskLeaseWriter(db *gorm.DB, owner string) *gorm.DB {
+	if owner == "" {
+		return db.Where("(lease_owner = '' OR lease_owner IS NULL)")
+	}
+	return db.Where("lease_owner = ? AND lease_expires_at > ?", owner, time.Now())
+}
+
 // UpdateTaskProviderProgress records upstream-reported progress without allowing
 // a delayed or out-of-order poll response to move the public percentage backwards.
 func (r *Repository) UpdateTaskProviderProgress(id string, progress int) error {
@@ -513,7 +539,7 @@ func (r *Repository) UpdateTaskProviderProgress(id string, progress int) error {
 
 func (r *Repository) SaveTaskCompletion(task *model.Task, expected model.TaskStatus, session *model.Session, message *model.Message, results []model.Result) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
-		updated := tx.Model(&model.Task{}).
+		updated := taskLeaseWriter(tx.Model(&model.Task{}), task.LeaseOwner).
 			Where("id = ? AND status = ?", task.ID, expected).
 			Select("*").Omit("id", "created_at").Updates(task)
 		if updated.Error != nil {
@@ -541,8 +567,8 @@ func (r *Repository) SaveTaskCompletion(task *model.Task, expected model.TaskSta
 	})
 }
 
-func (r *Repository) UpdateTaskTerminalState(id string, expected model.TaskStatus, status model.TaskStatus, stage string, errorText string, completedAt time.Time) (bool, error) {
-	result := r.db.Model(&model.Task{}).
+func (r *Repository) UpdateTaskTerminalState(id string, owner string, expected model.TaskStatus, status model.TaskStatus, stage string, errorText string, completedAt time.Time) (bool, error) {
+	result := taskLeaseWriter(r.db.Model(&model.Task{}), owner).
 		Where("id = ? AND status = ?", id, expected).
 		Updates(map[string]any{
 			"status": status, "stage": stage, "error": errorText, "completed_at": &completedAt,
@@ -729,7 +755,7 @@ func (r *Repository) TaskLogs(userID string, taskID string) ([]model.TaskLog, er
 
 func (r *Repository) SystemChannels(includeDisabled bool) ([]model.ModelChannel, error) {
 	var channels []model.ModelChannel
-	query := r.db.Order("created_at asc").Where("scope = ?", model.ChannelScopeSystem)
+	query := r.db.Order("sort_order asc, created_at asc, id asc").Where("scope = ?", model.ChannelScopeSystem)
 	if !includeDisabled {
 		query = query.Where("enabled = ?", true)
 	}
@@ -749,7 +775,7 @@ func (r *Repository) AdminSystemChannels(keyword string, status string, limit in
 	query := r.db.Model(&model.ModelChannel{}).Where("scope = ?", model.ChannelScopeSystem)
 	if value := strings.TrimSpace(keyword); value != "" {
 		pattern := "%" + strings.ToLower(value) + "%"
-		query = query.Where("lower(name) LIKE ? OR lower(base_url) LIKE ?", pattern, pattern)
+		query = query.Where("lower(name) LIKE ? OR lower(public_alias) LIKE ? OR lower(base_url) LIKE ?", pattern, pattern, pattern)
 	}
 	if status == "enabled" {
 		query = query.Where("enabled = ?", true)
@@ -759,7 +785,7 @@ func (r *Repository) AdminSystemChannels(keyword string, status string, limit in
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
-	if err := query.Order("created_at desc").Limit(limit).Offset(offset).Find(&channels).Error; err != nil {
+	if err := query.Order("sort_order asc, created_at asc, id asc").Limit(limit).Offset(offset).Find(&channels).Error; err != nil {
 		return nil, 0, err
 	}
 	return channels, total, nil
@@ -989,9 +1015,17 @@ func (r *Repository) UserStoredFileBytes(userID string) (int64, error) {
 	var total int64
 	err := r.db.Raw(`
 		SELECT
-			(SELECT COALESCE(SUM(size), 0) FROM resources WHERE user_id = ?)
+			COALESCE((
+				SELECT SUM(physical_resources.size)
+				FROM (
+					SELECT MAX(size) AS size
+					FROM resources
+					WHERE user_id = ? AND status = ?
+					GROUP BY COALESCE(NULLIF(provider, ''), 'local'), endpoint, bucket, object_key
+				) AS physical_resources
+			), 0)
 			+ (SELECT COALESCE(SUM(size), 0) FROM session_files WHERE user_id = ?)
-	`, userID, userID).Scan(&total).Error
+	`, userID, model.ResourceStatusReady, userID).Scan(&total).Error
 	return total, err
 }
 
@@ -1007,6 +1041,21 @@ func (r *Repository) CreateResource(resource *model.Resource) error {
 
 func (r *Repository) SaveResource(resource *model.Resource) error {
 	return r.db.Save(resource).Error
+}
+
+func (r *Repository) ResourceByUploadKey(userID string, uploadKey string) (*model.Resource, error) {
+	var resource model.Resource
+	if err := r.db.First(&resource, "user_id = ? AND upload_key = ?", userID, uploadKey).Error; err != nil {
+		return nil, err
+	}
+	return &resource, nil
+}
+
+func (r *Repository) ClaimFailedResourceUpload(userID string, id string) (bool, error) {
+	result := r.db.Model(&model.Resource{}).
+		Where("id = ? AND user_id = ? AND status = ?", id, userID, model.ResourceStatusFailed).
+		Updates(map[string]any{"status": model.ResourceStatusPending, "error": "", "updated_at": time.Now()})
+	return result.RowsAffected == 1, result.Error
 }
 
 func (r *Repository) DeleteResource(userID string, id string) error {
@@ -1038,6 +1087,66 @@ func (r *Repository) Resources(userID string, limit int) ([]model.Resource, erro
 	return resources, err
 }
 
+// PlaybackPendingVideos 返回本地存储、就绪但尚无播放副本判定结果的视频
+// （H.264 需标记 none、H.265 需触发转码）。
+func (r *Repository) PlaybackPendingVideos(limit int) ([]model.Resource, error) {
+	var resources []model.Resource
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	err := r.db.Where("kind = ? AND status = ? AND provider = ? AND (playback_status = ? OR playback_status IS NULL)",
+		"video", model.ResourceStatusReady, "local", "").Order("created_at asc").Limit(limit).Find(&resources).Error
+	return resources, err
+}
+
+// PlaybackNoneVideos 返回存量本地视频中旧逻辑遗留、停在 none 的行
+// （规则变更前 H.265/MPEG-4 Part 2 曾被误判为浏览器可播并落 none）。
+// 服务启动回填时对它们重新按 codec 判定，让判定规则变更覆盖规则变更前已导入的文件。
+func (r *Repository) PlaybackNoneVideos(limit int) ([]model.Resource, error) {
+	var resources []model.Resource
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	err := r.db.Where("kind = ? AND status = ? AND provider = ? AND playback_status = ?",
+		"video", model.ResourceStatusReady, "local", model.PlaybackStatusNone).
+		Order("created_at asc").Limit(limit).Find(&resources).Error
+	return resources, err
+}
+
+// ClaimPlaybackTranscode 原子地把待判定（空/none）视频置为 processing，返回是否抢占成功。
+// 多实例或多 goroutine 并发转同一资源时仅一个能成功置位，其余返回 false 直接放弃，
+// 避免重复转码同一份文件。
+func (r *Repository) ClaimPlaybackTranscode(id string) (bool, error) {
+	res := r.db.Model(&model.Resource{}).
+		Where("id = ? AND (playback_status = ? OR playback_status IS NULL OR playback_status = ?)",
+			id, "", model.PlaybackStatusNone).
+		Updates(map[string]any{"playback_status": model.PlaybackStatusProcessing, "playback_error": ""})
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected > 0, nil
+}
+
+// ResetStuckPlaybackTranscodes 服务重启时把卡在 processing 的转码记录重置回待判定
+// （进程崩溃后转码 goroutine 随进程消亡，状态永远停在 processing）。
+func (r *Repository) ResetStuckPlaybackTranscodes() error {
+	return r.db.Model(&model.Resource{}).
+		Where("playback_status = ?", model.PlaybackStatusProcessing).
+		Updates(map[string]any{"playback_status": "", "playback_error": ""}).Error
+}
+
+func (r *Repository) ResourceCleanupCandidates(incompleteBefore time.Time, readyBefore time.Time, limit int) ([]model.Resource, error) {
+	var resources []model.Resource
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	err := r.db.Where(
+		"(status IN ? AND updated_at <= ?) OR (status = ? AND created_at <= ?)",
+		[]model.ResourceStatus{model.ResourceStatusPending, model.ResourceStatusFailed}, incompleteBefore,
+		model.ResourceStatusReady, readyBefore,
+	).Order("created_at asc, id asc").Limit(limit).Find(&resources).Error
+	return resources, err
+}
 func (r *Repository) Assets(userID string) ([]model.Asset, error) {
 	var assets []model.Asset
 	err := r.db.Order("updated_at desc").Find(&assets, "user_id = ?", userID).Error
@@ -1046,7 +1155,7 @@ func (r *Repository) Assets(userID string) ([]model.Asset, error) {
 
 func (r *Repository) AssetSummaries(userID string) ([]model.Asset, error) {
 	var assets []model.Asset
-	err := r.db.Select("id", "kind", "category", "status", "primary_version_id", "title", "created_at", "updated_at").Order("updated_at desc").Find(&assets, "user_id = ?", userID).Error
+	err := r.db.Select("id", "folder_id", "kind", "category", "status", "primary_version_id", "title", "created_at", "updated_at").Order("updated_at desc").Find(&assets, "user_id = ?", userID).Error
 	return assets, err
 }
 
@@ -1058,10 +1167,19 @@ func (r *Repository) AssetForUser(userID string, id string) (*model.Asset, error
 	return &asset, nil
 }
 
+func (r *Repository) AssetsForUserIDs(userID string, ids []string) ([]model.Asset, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var assets []model.Asset
+	err := r.db.Find(&assets, "user_id = ? AND id IN ?", userID, ids).Error
+	return assets, err
+}
+
 func (r *Repository) UpsertAsset(asset *model.Asset) error {
 	result := r.db.Model(&model.Asset{}).
 		Where("id = ? AND user_id = ?", asset.ID, asset.UserID).
-		Updates(map[string]any{"kind": asset.Kind, "category": asset.Category, "status": asset.Status, "primary_version_id": asset.PrimaryVersionID, "title": asset.Title, "payload_json": asset.PayloadJSON, "updated_at": asset.UpdatedAt})
+		Updates(map[string]any{"folder_id": asset.FolderID, "kind": asset.Kind, "category": asset.Category, "status": asset.Status, "primary_version_id": asset.PrimaryVersionID, "title": asset.Title, "payload_json": asset.PayloadJSON, "updated_at": asset.UpdatedAt})
 	if result.Error != nil || result.RowsAffected > 0 {
 		return result.Error
 	}
@@ -1070,6 +1188,18 @@ func (r *Repository) UpsertAsset(asset *model.Asset) error {
 
 func (r *Repository) DeleteAsset(userID string, id string) error {
 	return r.DeleteAssetAndResources(userID, id, nil, nil)
+}
+
+func (r *Repository) FindExpiredArchivedAssets(cutoff time.Time, limit int) ([]model.Asset, error) {
+	var assets []model.Asset
+	if limit <= 0 {
+		limit = 100
+	}
+	err := r.db.Where("status = ? AND updated_at <= ?", model.AssetVersionStatusArchived, cutoff).
+		Order("updated_at asc, id asc").
+		Limit(limit).
+		Find(&assets).Error
+	return assets, err
 }
 
 func (r *Repository) ReplaceAssets(userID string, assets []model.Asset) error {
@@ -1616,9 +1746,16 @@ func (r *Repository) DeleteProjectAssetFolder(projectID string, folderID string)
 }
 
 // LinkProjectAsset 将首版本、素材领域字段、项目引用和修订号原子提交，避免产生半关联资产。
+// 资产首次入库也在此事务内完成（service 层只做内存构造，不预落库），
+// 事务失败时资产一并回滚，不再留下“有资产无链接”的孤儿资产。
 func (r *Repository) LinkProjectAsset(asset *model.Asset, version *model.AssetVersion, link *model.ProjectAssetLink) (bool, error) {
 	createdLink := false
 	err := r.db.Transaction(func(tx *gorm.DB) error {
+		// 资产可能尚未落库（首次导入）或已存在（并发/重试），冲突幂等跳过。
+		assetCreated := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "id"}}, DoNothing: true}).Create(asset)
+		if assetCreated.Error != nil {
+			return assetCreated.Error
+		}
 		created := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "project_id"}, {Name: "asset_id"}}, DoNothing: true}).Create(link)
 		if created.Error != nil {
 			return created.Error

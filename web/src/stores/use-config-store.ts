@@ -60,16 +60,47 @@ function normalizeWorkflowFieldSourceName(value: unknown, capability?: RunningHu
     const source = String(value || "").trim();
     const normalized = source.toLowerCase().replace(/[\s_-]/g, "");
     const aliases: Record<string, string> = {
-        text: "prompt", positive: "prompt", positiveprompt: "prompt",
-        image: "referenceImage", referenceimage: "referenceImage", referenceimages: "referenceImage",
-        video: "referenceVideo", referencevideo: "referenceVideo", referencevideos: "referenceVideo",
-        audio: "referenceAudio", referenceaudio: "referenceAudio", referenceaudios: "referenceAudio",
-        sizewidth: "width", imagewidth: "width", videowidth: "width", sizeheight: "height", imageheight: "height", videoheight: "height",
-        ratio: "aspectRatio", aspectratio: "aspectRatio", imageaspectratio: "aspectRatio", imageratio: "aspectRatio", videoaspectratio: "aspectRatio", videoratio: "aspectRatio",
-        videoresolution: "vquality", batch: "count", batchsize: "count", duration: "videoSeconds", videoseconds: "videoSeconds", videoquality: "vquality",
-        generateaudio: "videoGenerateAudio", videogenerateaudio: "videoGenerateAudio", watermark: "videoWatermark", videowatermark: "videoWatermark", voice: "audioVoice",
-        systemprompt: "systemPrompt", transparentbackground: "transparentBackground", audiovoice: "audioVoice",
-        audioformat: "audioFormat", audiospeed: "audioSpeed", audioinstructions: "audioInstructions",
+        text: "prompt",
+        positive: "prompt",
+        positiveprompt: "prompt",
+        image: "referenceImage",
+        referenceimage: "referenceImage",
+        referenceimages: "referenceImage",
+        video: "referenceVideo",
+        referencevideo: "referenceVideo",
+        referencevideos: "referenceVideo",
+        audio: "referenceAudio",
+        referenceaudio: "referenceAudio",
+        referenceaudios: "referenceAudio",
+        sizewidth: "width",
+        imagewidth: "width",
+        videowidth: "width",
+        sizeheight: "height",
+        imageheight: "height",
+        videoheight: "height",
+        ratio: "aspectRatio",
+        aspectratio: "aspectRatio",
+        imageaspectratio: "aspectRatio",
+        imageratio: "aspectRatio",
+        videoaspectratio: "aspectRatio",
+        videoratio: "aspectRatio",
+        videoresolution: "vquality",
+        batch: "count",
+        batchsize: "count",
+        duration: "videoSeconds",
+        videoseconds: "videoSeconds",
+        videoquality: "vquality",
+        generateaudio: "videoGenerateAudio",
+        videogenerateaudio: "videoGenerateAudio",
+        watermark: "videoWatermark",
+        videowatermark: "videoWatermark",
+        voice: "audioVoice",
+        systemprompt: "systemPrompt",
+        transparentbackground: "transparentBackground",
+        audiovoice: "audioVoice",
+        audioformat: "audioFormat",
+        audiospeed: "audioSpeed",
+        audioinstructions: "audioInstructions",
     };
     if (normalized === "resolution") return capability === "video" ? "vquality" : "size";
     // 工作流的 quality 可能是连续数值（例如 0.1-3），不能按视频分辨率处理。
@@ -150,7 +181,7 @@ export function normalizeWorkflowFieldMappings(value: unknown, capability?: Runn
         // source 明确存在但为空，表示用户要求保留工作流默认值；只有旧数据完全缺少来源字段时才自动补绑定。
         const sourceKey = ["source", "bind", "from"].find((key) => Object.prototype.hasOwnProperty.call(raw, key));
         const sourceConfigured = Boolean(sourceKey);
-        const configuredSource = sourceKey ? raw[sourceKey] : (raw.bindPrompt === true || raw.bind_prompt === true ? "prompt" : "");
+        const configuredSource = sourceKey ? raw[sourceKey] : raw.bindPrompt === true || raw.bind_prompt === true ? "prompt" : "";
         let source = normalizeWorkflowFieldSourceName(configuredSource, capability);
         const rawSourceAutomatic = raw.sourceAutomatic ?? raw.source_automatic;
         let sourceAutomatic = typeof rawSourceAutomatic === "boolean" ? rawSourceAutomatic : !sourceConfigured && Boolean(source);
@@ -179,8 +210,8 @@ export function normalizeWorkflowFieldMappings(value: unknown, capability?: Runn
         const options = Array.isArray(rawOptions)
             ? rawOptions
             : rawOptions && typeof rawOptions === "object"
-                ? ((rawOptions as Record<string, unknown>).choices ?? (rawOptions as Record<string, unknown>).options ?? (rawOptions as Record<string, unknown>).values)
-                : undefined;
+              ? ((rawOptions as Record<string, unknown>).choices ?? (rawOptions as Record<string, unknown>).options ?? (rawOptions as Record<string, unknown>).values)
+              : undefined;
         const range = workflowFieldRange(rawOptions);
         const min = raw.min ?? raw.minValue ?? raw.min_value ?? range.min;
         const max = raw.max ?? raw.maxValue ?? raw.max_value ?? range.max;
@@ -335,9 +366,7 @@ export function normalizeSavedWorkflowFields(
 ) {
     if (!workflow) return [];
     const schemaFields = workflowVideoFieldsFromJson(workflow.workflowJson);
-    return schemaFields.length
-        ? mergeWorkflowFieldMappings(workflow.fields, schemaFields, capability)
-        : normalizeWorkflowFieldMappings(workflow.fields, capability);
+    return schemaFields.length ? mergeWorkflowFieldMappings(workflow.fields, schemaFields, capability) : normalizeWorkflowFieldMappings(workflow.fields, capability);
 }
 
 function workflowFieldRange(value: unknown) {
@@ -416,6 +445,8 @@ export const PUBLIC_MODEL_CATALOG_ID = "managed";
 export type ModelChannel = {
     id: string;
     name: string;
+    publicAlias?: string;
+    sortOrder?: number;
     baseUrl: string;
     allowLocalChannel?: boolean;
     apiKey: string;
@@ -448,7 +479,7 @@ export type ModelChannel = {
         logicalModelId?: string;
         logicalCapabilitySpec?: CapabilitySpec;
         logicalCapabilityProfiles?: CapabilitySpec[];
-		logicalPriceTiers?: PublicLogicalModelPriceTier[];
+        logicalPriceTiers?: PublicLogicalModelPriceTier[];
         defaultOptions?: Record<string, unknown>;
     }>;
     transport?: "backend-channel" | "local-runtime";
@@ -719,22 +750,20 @@ export function normalizeConfigSnapshot(snapshot: ConfigStoreSnapshot | undefine
     const runningHubCapability = normalizeRunningHubCapability(persistedRunningHub?.capability, defaultConfig.runningHub.capability);
     const runningHubWorkflows = Array.isArray(persistedRunningHub?.workflows)
         ? persistedRunningHub.workflows
-            .filter((item): item is RunningHubWorkflow => Boolean(item && typeof item === "object" && String(item.workflowId || "").trim()))
-            .map((item) => {
-                const capability = normalizeRunningHubCapability(item.capability, runningHubCapability);
-                return {
-                    ...item,
-                    kind: normalizeRunningHubWorkflowKind(item.kind),
-                    workflowId: String(item.workflowId || "").trim(),
-                    capability,
-                    fields: normalizeSavedWorkflowFields(item, capability),
-                };
-            })
+              .filter((item): item is RunningHubWorkflow => Boolean(item && typeof item === "object" && String(item.workflowId || "").trim()))
+              .map((item) => {
+                  const capability = normalizeRunningHubCapability(item.capability, runningHubCapability);
+                  return {
+                      ...item,
+                      kind: normalizeRunningHubWorkflowKind(item.kind),
+                      workflowId: String(item.workflowId || "").trim(),
+                      capability,
+                      fields: normalizeSavedWorkflowFields(item, capability),
+                  };
+              })
         : [];
     const runningHubWorkflowID = String(persistedRunningHub?.workflowId || "").trim();
-    const runningHubSelectedKind = persistedRunningHub?.selectedKind
-        ? normalizeRunningHubWorkflowKind(persistedRunningHub.selectedKind)
-        : normalizeRunningHubWorkflowKind(runningHubWorkflows.find((item) => item.workflowId === runningHubWorkflowID)?.kind);
+    const runningHubSelectedKind = persistedRunningHub?.selectedKind ? normalizeRunningHubWorkflowKind(persistedRunningHub.selectedKind) : normalizeRunningHubWorkflowKind(runningHubWorkflows.find((item) => item.workflowId === runningHubWorkflowID)?.kind);
     const persistedComfyBridge = persistedConfig.comfyBridge;
     const comfyBridgeCapability = normalizeRunningHubCapability(persistedComfyBridge?.capability, defaultConfig.comfyBridge.capability);
     const comfyBridgeInstallType: ComfyBridgeConfig["comfyInstallType"] = persistedComfyBridge?.comfyInstallType === "portable" || persistedComfyBridge?.comfyInstallType === "desktop"
@@ -889,6 +918,7 @@ export function createModelChannel(channel?: Partial<ModelChannel>): ModelChanne
     return {
         id: channel?.id?.trim() || nanoid(),
         name: channel?.name?.trim() || "新渠道",
+        sortOrder: channel?.sortOrder ?? 0,
         baseUrl: providedBaseUrl || (interfaceType ? defaultBaseUrlForChannelInterface(interfaceType) : defaultBaseUrlForApiFormat(apiFormat)),
         allowLocalChannel: channel?.allowLocalChannel === true,
         apiKey: channel?.apiKey || "",
@@ -964,19 +994,19 @@ export function hasSystemModelPrice(channel: ModelChannel, model: string) {
     if (channel.scope !== "system") return true;
     // 价格字段已由后端按“非负数”校验；0 表示免费模型，不能在目录重建时被过滤。
     const configured = (value: number | undefined) => typeof value === "number" && Number.isFinite(value) && value >= 0;
-    return channel.modelCosts?.some((item) => {
-        if (item.model !== model) return false;
-        const tiers = item.logicalPriceTiers || [];
-        if (tiers.length) {
-            return tiers.some((tier) => tier.billingMode === "token"
-                ? [tier.inputTokenPriceMicrocredits, tier.outputTokenPriceMicrocredits, tier.cachedTokenPriceMicrocredits].every(configured)
-                : configured(tier.unitPriceMicrocredits));
-        }
-        if (item.billingMode === "token") {
-            return [item.inputTokenPriceMicrocredits, item.outputTokenPriceMicrocredits, item.cachedTokenPriceMicrocredits].every(configured);
-        }
-        return configured(item.unitPriceMicrocredits);
-    }) === true;
+    return (
+        channel.modelCosts?.some((item) => {
+            if (item.model !== model) return false;
+            const tiers = item.logicalPriceTiers || [];
+            if (tiers.length) {
+                return tiers.some((tier) => (tier.billingMode === "token" ? [tier.inputTokenPriceMicrocredits, tier.outputTokenPriceMicrocredits, tier.cachedTokenPriceMicrocredits].every(configured) : configured(tier.unitPriceMicrocredits)));
+            }
+            if (item.billingMode === "token") {
+                return [item.inputTokenPriceMicrocredits, item.outputTokenPriceMicrocredits, item.cachedTokenPriceMicrocredits].every(configured);
+            }
+            return configured(item.unitPriceMicrocredits);
+        }) === true
+    );
 }
 
 export function normalizeModelOptionValue(value: unknown, channels: ModelChannel[]) {
@@ -1120,14 +1150,16 @@ export function buildApiUrl(baseUrl: string, path: string) {
     if (isSystemProxyBaseUrl(normalizedBaseUrl)) return `${normalizedBaseUrl}${requestPath}`;
 
     const knownPrefixes = ["/api/plan/v3", "/api/v3", "/v1beta", "/v1", "/v2", "/v3"];
-    const requestPrefixFor = (value: string) => knownPrefixes.find((prefix) => {
-        const lower = value.toLowerCase();
-        return lower === prefix || lower.startsWith(`${prefix}/`) || lower.startsWith(`${prefix}?`) || lower.startsWith(`${prefix}#`);
-    }) || "";
-    const basePrefixFor = (value: string) => knownPrefixes.find((prefix) => {
-        const lower = value.toLowerCase();
-        return lower.endsWith(prefix) || lower.includes(`${prefix}/`) || lower.includes(`${prefix}?`) || lower.includes(`${prefix}#`);
-    }) || "";
+    const requestPrefixFor = (value: string) =>
+        knownPrefixes.find((prefix) => {
+            const lower = value.toLowerCase();
+            return lower === prefix || lower.startsWith(`${prefix}/`) || lower.startsWith(`${prefix}?`) || lower.startsWith(`${prefix}#`);
+        }) || "";
+    const basePrefixFor = (value: string) =>
+        knownPrefixes.find((prefix) => {
+            const lower = value.toLowerCase();
+            return lower.endsWith(prefix) || lower.includes(`${prefix}/`) || lower.includes(`${prefix}?`) || lower.includes(`${prefix}#`);
+        }) || "";
     const basePrefix = basePrefixFor(normalizedBaseUrl);
     const requestPrefix = requestPrefixFor(requestPath);
     if (requestPrefix) {

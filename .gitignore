@@ -1,9 +1,32 @@
 .next/
 out/
 node_modules/
+open-storyboard-canvas/
 docs/*
 !docs/design/
 !docs/index.md
+!docs/adr/
+!docs/plans/
+# Keep the new plugin design spec versioned without unignoring generated docs.
+!docs/content/
+docs/content/*
+!docs/content/docs/
+docs/content/docs/*
+!docs/content/docs/plugins/
+docs/content/docs/plugins/*
+!docs/content/docs/plugins/ai-art-critique.mdx
+# Keep the task stability runbook versioned without unignoring generated docs.
+!docs/content/docs/backend/
+docs/content/docs/backend/*
+!docs/content/docs/backend/task-runtime-stability.mdx
+!docs/content/docs/backend/http-api.mdx
+!docs/content/docs/backend/code-map.mdx
+!docs/content/docs/backend/newapi-channel-2.mdx
+!docs/content/docs/backend/creative-agent-runtime.mdx
+# Keep the creative Agent design versioned without unignoring generated docs.
+!docs/content/docs/overview/
+docs/content/docs/overview/*
+!docs/content/docs/overview/creative-agent-design.mdx
 .env*
 !.env.example
 data/
@@ -16,7 +39,6 @@ dist/
 /web/public/OpenAICanvas-ComfyBridge.exe
 /web/public/OpenAICanvas-ComfyBridge-linux-amd64
 /web/public/OpenAICanvas-ComfyBridge-linux-arm64
-novel-agent/.jobs/
 *.db
 *.db-*
 *.sqlite
@@ -42,25 +64,7 @@ assets/prototypes/.*.drawio.bkp
 camera_language_guide.md
 .superdesign
 .playwright-cli/
+/project-memory/
 
-# Local build and verification artifacts
-.gocache*/
-.gomodcache/
-backend/.gocache*/
-backend/*.exe
-backend/*.exe~
-canvas-agent/native/comfy-bridge/.gocache*/
-canvas-agent/native/comfy-bridge/*.exe
-canvas-agent/native/comfy-bridge/*.exe~
-canvas-agent/native/comfy-bridge/scratch-*.json
-canvas-agent/native/comfy-bridge/scratch_*.go
-canvas-agent/native/comfy-bridge/*before*.exe
-canvas-agent/native/comfy-bridge/*old*.exe
-canvas-agent/web/public/OpenAICanvas-ComfyBridge-*
-tmp_*.py
-codex-task-*.png
-
-# Local diagnostics and scratch files
-backend/cmd/connectivity-test/
-backend/cmd/verifyrelay/
-canvas-agent/native/wf.txt
+# Local backend executable; never commit build output.
+backend/cmd/server/server
