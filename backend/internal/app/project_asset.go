@@ -3,10 +3,7 @@ package app
 import (
 	"encoding/json"
 	"errors"
-<<<<<<< HEAD:backend/internal/service/project_asset.go
-=======
 	"fmt"
->>>>>>> upstream/main:backend/internal/app/project_asset.go
 	"strings"
 	"time"
 

@@ -70,7 +70,6 @@ export function ImageSettingsPanel({ config, workflowFields = [], onConfigChange
     const activeSize = normalized.size;
     const activeQualityOptions = profile.quality.values.map((value) => qualityOptions.find((item) => item.value === value) || { value, label: value });
     const priceTiers = imageModelPriceTiers(config);
->>>>>>> upstream/main
 
     return (
         <ImageSettingsTheme theme={theme}>
@@ -110,7 +109,6 @@ export function ImageSettingsPanel({ config, workflowFields = [], onConfigChange
                     </span>
                 </div> : null}
                 {showSize ? <ImageSizePicker profile={profile} size={activeSize} quality={quality} onChange={(size, nextQuality) => applyImageSizeSelection(onConfigChange, size, nextQuality)} /> : null}
->>>>>>> upstream/main
                 {showCount && effectiveMaxCount > 1 ? (
                     <div className="space-y-2">
                         <SettingTitle color={theme.node.muted}>生成张数</SettingTitle>
@@ -132,7 +130,6 @@ export function ImageSettingsPanel({ config, workflowFields = [], onConfigChange
 export function applyImageSizeSelection(onConfigChange: ImageSettingsPanelProps["onConfigChange"], size: string, quality?: string) {
     onConfigChange("size", size);
     if (quality) onConfigChange("quality", quality);
->>>>>>> upstream/main
 }
 
 export function ImageSettingsTheme({ theme, children }: { theme: CanvasTheme; children: ReactNode }) {
@@ -224,7 +221,6 @@ function CountInput({ value, quickCount, max, theme, onChange }: { value: number
     );
 }
 
->>>>>>> upstream/main
 function SettingTitle({ children, color }: { children: string; color: string }) {
     return (
         <div className="text-xs font-medium" style={{ color }}>
