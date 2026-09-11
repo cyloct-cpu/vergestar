@@ -432,6 +432,9 @@ func (s *Service) StartNovelAgentJob(ctx context.Context, userID string, request
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return NovelAgentJob{}, WrapAppError(http.StatusBadGateway, "小说 Agent 任务响应无效", err)
 	}
+	if err := s.ensureNovelTurnUserMessage(userID, request); err != nil {
+		log.Printf("novel turn user message persist failed: user=%s err=%v", userID, err)
+	}
 	if strings.TrimSpace(request.ConfirmedIntent) != "" {
 		if err := s.repo.ConsumeStoryAgentConfirmations(userID, request.SessionID); err != nil {
 			return NovelAgentJob{}, WrapAppError(http.StatusInternalServerError, "保存小说 Agent 确认状态失败", err)

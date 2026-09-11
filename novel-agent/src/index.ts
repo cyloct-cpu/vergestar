@@ -8,6 +8,7 @@ import { approveChapter, consolidateBook, deleteBook, detectBookChapter, evaluat
 import { deleteBookSession, renameBookSession } from "@actalk/inkos-core";
 import { listUserNovelAgentJobs } from "./jobs.js";
 import { cancelNovelAgentJob, getJobStreamEvents, getNovelAgentJob, startNovelAgentJob, subscribeJobStream } from "./jobs.js";
+import { readPlayState } from "./play-state.js";
 
 const host = process.env.VERGESTAR_NOVEL_AGENT_HOST || "127.0.0.1";
 const port = Number(process.env.VERGESTAR_NOVEL_AGENT_PORT || "17421");
@@ -394,6 +395,21 @@ app.post("/agent/books/delete", async (req, res, next) => {
         }
         const result = await deleteBook(String(body.userId ?? ""), sessionId, bookId);
         res.json(result);
+    } catch (error) {
+        next(error);
+    }
+});
+
+app.get("/agent/play/state", async (req, res, next) => {
+    try {
+        const owner = req.header("x-vergestar-novel-agent-user") || String(req.query.userId || "");
+        const sessionId = String(req.query.sessionId || "");
+        if (!owner || !sessionId) {
+            res.status(400).json({ error: "user and sessionId are required" });
+            return;
+        }
+        const state = await readPlayState(owner, sessionId);
+        res.json(state);
     } catch (error) {
         next(error);
     }
