@@ -1167,7 +1167,15 @@ InkOS 完整子系统（PlayRunner / PlayStore / StoryGraph / 互动影游向导
 - **待渠道/模型稳定后验收**：同人 fanfic_init、番外 spinoff_create、仿写 style_imitation、续写 continuation_import、翻译 translation_create——五模式的 Bridge/后端/前端管线已就绪，只差模型稳定调用 propose_action。
 - **可能的改进**：在 Bridge 规划回合的 backgroundTaskContext 中为每种模式加入更精确的 few-shot 提示，引导模型正确调用 propose_action；或在 Bridge 侧增加文字回复到确认动作的降级解析（当模型只给文字时尝试从文本中提取结构化意图）。
 
+
+## 2026-09-12 模型适配优化：few-shot 提示注入
+
+- **改进**：Bridge 自由创作会话（无 bookId/confirmedIntent）注入 backgroundTaskContext，列出全部可用 propose_action 的 action 常量及 actionPayload 字段结构，引导模型在用户明确要动手时正确调用工具而非只用文字回复。有 bookId 的场景（write_next/audit/export/radar/repair）已有模式化提示词。
+- **效果**：提升了有 bookId 场景的确认卡产出率；无 bookId 自由会话仍依赖模型行为——gpt-5.5 倾向文字回复而非工具调用，这是模型层面限制。更强的模型（如支持 tool_use 的原生 API）会有更好表现。
+- **代码**：few-shot 提示已合入 Bridge 并重启生效；后续模型升级无需改代码。
+
 ## 当前已知限制
+
 
 
 

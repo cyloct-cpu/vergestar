@@ -340,6 +340,10 @@ export async function runFullNovelAgentTurn(input: FullNovelAgentTurnInput): Pro
                                 ? "这是 Vergestar 的市场趋势研究回合。围绕当前书籍的题材和定位，使用可用的研究工具做一次市场趋势扫描，并以中文总结要点、机会与竞品参考。不要调用 propose_action，不要修改任何书籍文件。"
                                 : "这是 Vergestar Writer 的规划回合。当前书籍已经存在，用户请求的是规划写下一章，不是建书、结构草案或普通讨论。必须读取当前书籍状态后，调用 propose_action，action=write_next；确认卡的 actionPayload 必须包含 writeNext.chapterCount（默认 1）。书籍文件位于 books/<书籍ID>/ 目录之下：读状态用 books/<书籍ID>/story/current_state.md 与 books/<书籍ID>/story/chapter_summaries.md（注意路径带 books/<书籍ID>/ 前缀，不要直接读 story/ 开头的路径）。本回合绝对不要调用 draft_structure、create_book、sub_agent、writer、auditor 或 reviser，也不要只返回普通文字。",
             }
+            : !input.bookId && !input.confirmedIntent
+            ? {
+                backgroundTaskContext: "这是 Vergestar 的自由创作会话。用户可能会描述一个想法、一段创意或一个创作请求。如果用户的请求涉及以下创作动作之一，你必须在充分理解后调用 propose_action 工具（不要只用文字回复）：\n- 建书/长篇/短篇：action=create_book，actionPayload.createBook 包含 title/genre/language/targetChapters/chapterWordCount\n- 写下一章：action=write_next，actionPayload.writeNext 包含 chapterCount\n- 短篇生产：action=short_run，actionPayload.shortRun 包含 title/direction/chapters/charsPerChapter/language\n- 同人：action=fanfic_init，actionPayload.fanficCreate 包含 title/sourceText/sourceName/mode\n- 番外：action=spinoff_create，actionPayload.spinoffCreate 包含 title/direction/parentBookId\n- 仿写：action=style_imitation，actionPayload.imitationCreate 包含 title/referenceText/storyIdea\n- 翻译：action=translation_create，actionPayload.translationCreate 包含 filePath/targetLanguage\n调用 propose_action 时 action 字段严格只写上述常量之一，不要混入换行、标签或额外字符。如果用户只是讨论想法还没确认要动手，先给出方案和分析，在用户明确要动手时再调 propose_action。",
+            }
             : {}),
         // Planning turns for an existing book must not be able to invoke
         // Writer/Auditor/Reviser directly. A confirmed action turn is the
