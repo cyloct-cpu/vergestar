@@ -95,3 +95,13 @@
 - MSYS 会转换 `git show rev:path` 的参数（`/`→`\`、`:`→`;`），须加 `MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL="*"`。
 - Go 构建需 MinGW gcc（cgo）：`PATH` 加 `C:\Users\Administrator\AppData\Local\Microsoft\WinGet\Packages\BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\mingw64\bin`，`GOCACHE`/`GOMODCACHE` 指向 `.local/cache/`；`.gocache-build/`（build:bridge 产生）已加入 .gitignore，勿 `git add -A` 前不检查。
 - 前端构建脚本：`bun run build` = build:bridge + tsc --noEmit + vite build；开发用 `bun run dev`（13000 端口）。
+
+## 10. 运行时验收与合并结果（2026-09-12 本会话补记）
+
+- **运行时验收通过**：
+  - DB v13–v19 在两个数据目录均自动补跑成功（.local/project-workbench-debug 与 backend/data）；
+  - Bridge/后端/前端三服务在合并分支代码上正常运行；
+  - API 级验收（账号 1234）：15 Skills、10 会话、项目章节（第 1 章 completed / 第 2 章 draft）、章节版本、StoryFoundation 22 文件、Job 镜像历史 15 条——全部完整。
+- **合并已落 main 并推送 origin**（`1de53a39..5d0d9fb6`，fast-forward）。
+- 踩坑记录：① start 脚本与手动启动的数据目录不同（.local/project-workbench-debug vs backend/data）——验收/调试时先确认 CANVAS_BACKEND_DATA_DIR 指向的数据目录；② 合并后注册流程要求管理员配置 SMTP（默认邮箱域名白名单 gmail/qq/163 等），旧账号重新登录即可；③ 会话 cookie 格式为 `<sessionID>.<token>` 两段式。
+- 验收用临时注入的 auth session（mergecheck-96994e53）建议下轮清理。
