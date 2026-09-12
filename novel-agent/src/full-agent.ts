@@ -29,7 +29,7 @@ export type FullNovelAgentTurnInput = NovelAgentTurnInput & {
     sessionId: string;
     mode?: string;
     bookId?: string;
-    confirmedIntent?: "create_book" | "write_next" | "repair_state" | "revise_chapter" | "create_script" | "create_storyboard" | "short_run" | "draft_next" | "plan_chapter" | "compose_chapter" | "fanfic_init" | "continuation_import" | "spinoff_create" | "style_imitation" | "translation_create" | "interactive_film_create" | "play_start" | "play_step" | "interactive_film_create";
+    confirmedIntent?: "create_book" | "write_next" | "repair_state" | "revise_chapter" | "create_script" | "create_storyboard" | "short_run" | "draft_next" | "plan_chapter" | "compose_chapter" | "fanfic_init" | "continuation_import" | "spinoff_create" | "style_imitation" | "translation_create" | "interactive_film_create" | "play_start" | "play_step";
     confirmedActionPayload?: Record<string, unknown>;
     abortSignal?: AbortSignal;
     onLog?: (message: string) => void;
@@ -115,6 +115,7 @@ export async function runFullNovelAgentTurn(input: FullNovelAgentTurnInput): Pro
         logger: createLogger({ tag: "vergestar-novel", sinks: [createStderrSink({ minLevel: "info", enableColors: false }), { write: (entry) => input.onLog?.(entry.message) }] }),
     };
     const pipeline = new PipelineRunner(pipelineConfig);
+    let playArtifacts: FullNovelAgentTurnResult["artifacts"] | undefined;
     const sessionKind = input.confirmedIntent === "create_book" ? "book-create" : input.confirmedIntent === "short_run" ? "short" : input.confirmedIntent === "interactive_film_create" ? "interactive-film" : (input.confirmedIntent === "play_start" || input.confirmedIntent === "play_step") ? "play" : input.bookId ? "book" : "chat";
     if (input.bookId) {
         const existingSession = await loadBookSession(projectRoot, input.sessionId);
@@ -386,6 +387,39 @@ export async function runFullNovelAgentTurn(input: FullNovelAgentTurnInput): Pro
         },
     };
     const result = await runAgentSession(config, input.message);
+
+    const artifacts = input.confirmedIntent && input.confirmedIntent !== "play_start" ? await readBookArtifacts(projectRoot, input.bookId, input.sessionId, result.messages) : undefined;
+    // T5：play_start 成功后把世界投影为 Vergestar 项目（合成书籍元数据走既有投影链）。
+    if (input.confirmedIntent === "play_start" && !result.errorMessage) {
+        try {
+            const worldId = input.sessionId;
+            const worldDir = path.join(projectRoot, "worlds", worldId);
+            const worldRaw = await readFile(path.join(worldDir, "world.json"), "utf8");
+            const world = JSON.parse(worldRaw) as { title?: string; premise?: string };
+            const stateMd = await readFile(path.join(worldDir, "runs", "main", "projections", "state.md"), "utf8").catch(() => "");
+            const sceneMd = await readFile(path.join(worldDir, "runs", "main", "projections", "scene.md"), "utf8").catch(() => "");
+            const worldTitle = (world.title || "互动世界").trim();
+            const syntheticBookId = ("play-" + worldId).replace(/[^A-Za-z0-9_-]/g, "-").slice(0, 100);
+            result.responseText = (result.responseText || "") + "\n\n开放世界《" + worldTitle + "》已构建完成，可在「我的创作」中查看。";
+            playArtifacts = {
+                bookId: syntheticBookId,
+                agentSessionId: input.sessionId,
+                title: worldTitle,
+                bookJson: JSON.stringify({ title: worldTitle, kind: "play", language: "zh", storyId: worldId }),
+                chapterIndex: JSON.stringify({ chapters: [] }),
+                files: {},
+                productionFiles: {
+                    ["worlds/" + worldId + "/world.json"]: worldRaw,
+                    ...(stateMd ? { ["worlds/" + worldId + "/runs/main/projections/state.md"]: stateMd } : {}),
+                    ...(sceneMd ? { ["worlds/" + worldId + "/runs/main/projections/scene.md"]: sceneMd } : {}),
+                },
+            };
+            result.responseText = (result.responseText || "") + "\n\n开放世界《" + worldTitle + "》已构建完成，可在「我的创作」中查看。";
+        } catch (error) {
+            // 世界文件缺失时保留原始文本结果，不阻断。
+            console.error("[bridge] play world projection failed:", error instanceof Error ? error.message : error);
+        }
+    }
     if (result.errorMessage) {
         // Do not turn an upstream/provider failure into a fake successful
         // proposal. The UI needs a retryable error and the job needs to be
@@ -406,7 +440,6 @@ export async function runFullNovelAgentTurn(input: FullNovelAgentTurnInput): Pro
     }
     const confirmation = input.confirmedIntent ? undefined : await readProposedAction(projectRoot, input.sessionId);
     const productionResultText = latestToolResultText(result.messages);
-    const artifacts = input.confirmedIntent ? await readBookArtifacts(projectRoot, input.bookId, input.sessionId, result.messages) : undefined;
     const now = new Date().toISOString();
     return {
         session: {
@@ -419,7 +452,7 @@ export async function runFullNovelAgentTurn(input: FullNovelAgentTurnInput): Pro
         },
         text: result.responseText || productionResultText || confirmation?.summary || "已生成待确认的创作动作。",
         events,
-        ...(artifacts ? { artifacts } : {}),
+        ...(playArtifacts ? { artifacts: playArtifacts } : artifacts ? { artifacts } : {}),
         ...(confirmation ? { confirmation } : {}),
     };
 }

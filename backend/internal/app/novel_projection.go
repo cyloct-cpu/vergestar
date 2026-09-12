@@ -524,15 +524,16 @@ func (s *Service) syncNovelProductionArtifacts(userID, projectID string, artifac
 	if len(artifacts.ProductionFiles) == 0 {
 		return nil
 	}
-	// 短篇产物（shorts/*）只进入 StoryFoundation 文件集合，没有场次/镜头语义。
-	shortOnly := true
+	// 短篇（shorts/*）与 Play 世界（worlds/*）产物只进入 StoryFoundation 文件集合，
+	// 没有场次/镜头语义。
+	nonProductionOnly := true
 	for path := range artifacts.ProductionFiles {
-		if !strings.HasPrefix(path, "shorts/") {
-			shortOnly = false
+		if !strings.HasPrefix(path, "shorts/") && !strings.HasPrefix(path, "worlds/") {
+			nonProductionOnly = false
 			break
 		}
 	}
-	if shortOnly {
+	if nonProductionOnly {
 		return nil
 	}
 	unitID := strings.TrimSpace(artifacts.ProductionUnitID)

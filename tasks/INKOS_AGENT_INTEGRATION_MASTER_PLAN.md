@@ -1135,7 +1135,17 @@ InkOS 完整子系统（PlayRunner / PlayStore / StoryGraph / 互动影游向导
 - 部分镜头未命中的原因：既有镜头 ID 与分镜表镜号非严格顺序对应（旧投影创建顺序与表格行不完全一致），全量对齐需重建镜头（对旧数据保留不重建是保护性设计）。
 - **结论**：回填机制可用且安全；新生成的分镜（走新 CreateProjectShot 填充路径）将直接带完整结构化字段。
 
+
+## 2026-09-12 T5-Play 世界投影到书架（Play 项目化）完成
+
+- **Bridge**：play_start 执行成功后读取 worlds/<sessionId>/world.json + projections，合成书籍元数据（bookId=play-<worldId>，kind=play）与 productionFiles，走既有投影链进入 Vergestar。世界 resume 路径（二次 play_start）同样产出投影，幂等。
+- **后端**：worlds/ 白名单放行（同 shorts 处理）；影视投影守卫扩展为 shorts+worlds 均跳过场次/镜头语义。
+- **实机验收**：play_start 重放成功 → storyProjectId 生成 → 书架出现 Play 世界项目、真相面板显示 world.json/state/scene 三个文件；再次打开会话游玩时真相面板联动。
+- 修复过程中发现的缺陷：① play 投影 artifacts 必须用局部变量承载（原赋值到 result 上的字段在 AgentSessionResult 类型上不存在且会被 readBookArtifacts 覆盖）；② /agent/turn 与 /agent/jobs 的 playMode 透传双端补全。
+- **T5-Play 项目化至此闭环**：世界构建 → 书架项目 → 真相面板阅读 → 会话游玩。剩余：游玩富 UI（HUD 已有状态面板）、变体回放、世界图片。
+
 ## 当前已知限制
+
 
 
 

@@ -706,6 +706,9 @@ func validNovelArtifactPath(path string) bool {
 	if strings.HasPrefix(path, "shorts/") && (strings.HasSuffix(path, ".md") || strings.HasSuffix(path, ".json")) {
 		return true
 	}
+	if strings.HasPrefix(path, "worlds/") && (strings.HasSuffix(path, ".md") || strings.HasSuffix(path, ".json")) {
+		return true
+	}
 	for _, allowed := range []string{
 		"story/author_intent.md", "story/brief.md", "story/book_rules.md", "story/character_matrix.md",
 		"story/current_state.md", "story/pending_hooks.md", "story/emotional_arcs.md", "story/chapter_summaries.md", "story/subplot_board.md", "story/story_bible.md", "story/style_guide.md",
