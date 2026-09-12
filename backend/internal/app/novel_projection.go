@@ -1,6 +1,7 @@
 package app
 
 import (
+	"strconv"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -697,6 +698,7 @@ func (s *Service) syncNovelProductionArtifacts(userID, projectID string, artifac
 	for index, asset := range manifest.Assets {
 		prompts[index] = asset.Prompt
 	}
+	storyboardRows := parseNovelStoryboardTable(storyboardRaw)
 	storyboardTargets := novelStoryboardTargetScenes(scriptScenes, prompts)
 	for index, asset := range manifest.Assets {
 		if asset.ShotID == "" || asset.Status != "prompt_ready" || strings.TrimSpace(asset.Prompt) == "" {
@@ -758,9 +760,32 @@ func (s *Service) syncNovelProductionArtifacts(userID, projectID string, artifac
 			}
 			continue
 		}
+		// T6：从分镜表提取结构化字段（景别/机位/时长/对白/动作），缺失时回退默认值。
+		shotNumber := 0
+		if digits := strings.TrimPrefix(asset.ShotID, "shot-"); digits != "" {
+			if parsed, err := strconv.Atoi(digits); err == nil {
+				shotNumber = parsed
+			}
+		}
+		row, rowOk := storyboardRows[shotNumber]
+		durationMs := int64(4000)
+		revision := ShotRevisionInput{PlotDescription: asset.Prompt, ImagePrompt: asset.Prompt, VideoPrompt: asset.Prompt, ContinuityNotes: "inkosStoryboard:" + sourceID}
+		if rowOk {
+			if row.DurationMs > 0 {
+				durationMs = row.DurationMs
+			}
+			revision.ShotSize = novelShotSizeFrom(row.ShotSize)
+			revision.CameraAngle = novelCameraAngleFrom(row.CameraAngle)
+			revision.Dialogue = row.Dialogue
+			revision.Action = row.Action
+			revision.PlotDescription = row.Scene
+			if row.ContinuityNotes != "" {
+				revision.ContinuityNotes = row.ContinuityNotes
+			}
+		}
 		shot, createErr := s.CreateProjectShot(userID, projectID, CreateProjectShotRequest{
-			UnitID: unitID, Title: fmt.Sprintf("SH.%02d", index+1), Description: asset.Prompt, Position: index, DurationMs: 4000,
-			Revision: ShotRevisionInput{PlotDescription: asset.Prompt, ImagePrompt: asset.Prompt, VideoPrompt: asset.Prompt, ContinuityNotes: "inkosStoryboard:" + sourceID},
+			UnitID: unitID, Title: fmt.Sprintf("SH.%02d", index+1), Description: asset.Prompt, Position: index, DurationMs: durationMs,
+			Revision: revision,
 		})
 		if createErr != nil {
 			return createErr

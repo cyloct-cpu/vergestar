@@ -1100,5 +1100,15 @@ InkOS 完整子系统（PlayRunner / PlayStore / StoryGraph / 互动影游向导
 - 踩坑：后端重启后新路由未加载时，未匹配请求会落入上游 SystemProxyNoRouteHandler（短公共代理形式），表现为"系统渠道不存在或已停用"——遇到该错误先确认后端进程是否为最新构建。
 
 
+
+## 2026-09-12 T6：ShotRevision 结构化字段解析（分镜表 → 镜头数据）
+
+- 总纲遗留项"ShotRevision 的 Camera/Movement/Duration 等字段依赖后续解析"已完成：InkOS storyboard.md 的分镜表是结构化 Markdown 表格（镜号/场景画面/人物物件/动作/景别机位/对白字幕/时长建议/备注），此前投影只取 prompt，结构化列全部丢弃。
+- 新增 app 包 novel_storyboard_table.go：parseNovelStoryboardTable 按镜号列提取每行（数字前缀提取，修复字符集 Trim 把镜号 10 破坏为 1 的 bug——真实数据 12 行解析出 11 行暴露），字段映射：场景画面→PlotDescription、动作→Action、景别机位→ShotSize+CameraAngle（关键词识别：特写/近景/中景/远景/全景/过肩/俯拍/低角度/跟拍等）、对白字幕→Dialogue、时长建议→DurationMs（N秒→N*1000）、备注→ContinuityNotes。
+- 镜头创建（CreateProjectShot）时按 shotID 数字序号查表填充；已有镜头不回填（避免覆盖人工修订），新分镜生成即带完整结构化字段。
+- 回归：表格解析器单测（真实 InkOS 分镜 12 镜全解析：row1 3000ms/景别/对白、row12 4000ms）+ 投影集成测试（镜头 DurationMs/ShotSize/Dialogue/ContinuityNotes 断言）+ 既有 TestSyncNovel 系列全过；go build 通过。
+- 影响：镜头生成面板与下游媒体任务的镜头数据（景别/时长/对白）自此结构化可用；视频 prompt/时长建议可直接驱动生成参数。
+
 ## 当前已知限制
+
 
