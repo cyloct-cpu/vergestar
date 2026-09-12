@@ -934,6 +934,8 @@ function NovelProjectPanel({ projectId, onBack, onOpenDrama }: { projectId: stri
     const [characterName, setCharacterName] = useState("");
     const [studioView, setStudioView] = useState<"write" | "review" | "adapt" | "story">("write");
     const [isEditingChapter, setIsEditingChapter] = useState(false);
+    const [readerOpen, setReaderOpen] = useState(false);
+    const [readerExpanded, setReaderExpanded] = useState(false);
     const refresh = () => {
         void queryClient.invalidateQueries({ queryKey: ["project", projectId] });
         void queryClient.invalidateQueries({ queryKey: ["projects"] });
@@ -1211,7 +1213,13 @@ function NovelProjectPanel({ projectId, onBack, onOpenDrama }: { projectId: stri
                                     {isShortProject ? <p className="mt-3 rounded-md border border-border/60 bg-surface-active px-3 py-2 text-xs text-muted-foreground">短篇项目为整篇生产，不支持逐章写作；可在「故事资料」阅读全文，或重新发起短篇生产。</p> : <NovelWriterPanel projectId={projectId} foundation={foundation.data} config={config} queryClient={queryClient} message={message} />}
                                     <div className="mt-5 border-t border-border pt-4">
                                         <div className="flex items-center justify-between gap-2"><div><p className="text-xs text-foreground/45">当前章节</p><h3 className="mt-1 text-base font-semibold">第 {activeUnit.position + 1} 章 · {activeUnit.title}</h3></div><Button size="small" onClick={() => setIsEditingChapter((value) => !value)}>{isEditingChapter ? "收起编辑" : "阅读与编辑"}</Button></div>
-                                        {isEditingChapter ? <><Input className="mt-4" value={chapterTitle} onChange={(event) => setChapterTitle(event.target.value)} maxLength={240} aria-label="章节标题" /><Input.TextArea className="mt-3" rows={16} value={chapterText || chapterContent} onChange={(event) => setChapterText(event.target.value)} aria-label="章节正文" /><div className="mt-3 flex gap-2"><Button type="primary" icon={<Save className="size-4" />} loading={saveChapter.isPending} onClick={() => saveChapter.mutate()}>保存章节</Button><Button icon={<History className="size-4" />} loading={snapshot.isPending} onClick={() => snapshot.mutate()}>创建版本</Button></div></> : <p className="mt-4 max-h-52 overflow-hidden whitespace-pre-wrap text-sm leading-7 text-foreground/70">{chapterContent || "正文会在 Writer 完成后显示在这里。"}</p>}
+                                        {isEditingChapter ? <><Input className="mt-4" value={chapterTitle} onChange={(event) => setChapterTitle(event.target.value)} maxLength={240} aria-label="章节标题" /><Input.TextArea className="mt-3" rows={16} value={chapterText || chapterContent} onChange={(event) => setChapterText(event.target.value)} aria-label="章节正文" /><div className="mt-3 flex gap-2"><Button type="primary" icon={<Save className="size-4" />} loading={saveChapter.isPending} onClick={() => saveChapter.mutate()}>保存章节</Button><Button icon={<History className="size-4" />} loading={snapshot.isPending} onClick={() => snapshot.mutate()}>创建版本</Button></div></> : <div className="mt-4">
+                                            <p className="max-h-52 overflow-hidden whitespace-pre-wrap text-sm leading-7 text-foreground/70">{(chapterContent || "正文会在 Writer 完成后显示在这里。").slice(0, readerExpanded ? chapterContent.length : 600)}{!readerExpanded && chapterContent.length > 600 ? "…" : ""}</p>
+                                            <div className="mt-2 flex gap-2">
+                                                <Button size="small" type="primary" ghost icon={<BookOpenText className="size-3.5" />} onClick={() => setReaderOpen(true)}>全屏阅读</Button>
+                                                {!readerExpanded && chapterContent.length > 600 ? <Button size="small" onClick={() => setReaderExpanded(true)}>展开全文</Button> : null}
+                                            </div>
+                                        </div>}
                                     </div>
                                 </> : null}
                                 {studioView === "review" ? <>
@@ -1305,6 +1313,36 @@ function NovelProjectPanel({ projectId, onBack, onOpenDrama }: { projectId: stri
                     </div>
                 </aside>
             </div>
+            <Modal
+                title={
+                    <span className="font-serif">
+                        第 {activeUnit ? activeUnit.position + 1 : 1} 章 · {activeUnit?.title || ""}
+                        {latestVersion ? <span className="ml-2 text-xs font-normal text-muted-foreground">{latestVersion.content.length} 字 · 版本 {latestVersion.number}</span> : null}
+                    </span>
+                }
+                open={readerOpen}
+                onCancel={() => setReaderOpen(false)}
+                footer={null}
+                width={860}
+                destroyOnHidden
+            >
+                <div className="max-h-[62vh] overflow-y-auto pr-2">
+                    <article className="font-serif text-[17px] leading-[2] text-foreground/90 whitespace-pre-wrap">{chapterContent}</article>
+                </div>
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
+                    <div className="flex flex-wrap gap-1.5">
+                        {(versions.data?.versions || []).slice().reverse().map((version) => (
+                            <Button key={version.id} size="small" variant={version.number === latestVersion?.number ? "outlined" : "text"} onClick={() => restoreVersion.mutate(version.id)} loading={restoreVersion.isPending && restoreVersion.variables === version.id}>
+                                版本 {version.number}
+                            </Button>
+                        ))}
+                    </div>
+                    <div className="flex gap-2">
+                        <Button size="small" icon={<Pencil className="size-3.5" />} onClick={() => { setReaderOpen(false); setIsEditingChapter(true); }}>编辑本章</Button>
+                        <Button size="small" type="primary" ghost icon={<SearchCheck className="size-3.5" />} onClick={() => { setReaderOpen(false); setStudioView("review"); }}>审稿与修订</Button>
+                    </div>
+                </div>
+            </Modal>
             <Modal title="书籍设置" open={settingsOpen} onCancel={() => setSettingsOpen(false)} footer={null} destroyOnHidden>
                 <div className="grid gap-3">
                     <div>
