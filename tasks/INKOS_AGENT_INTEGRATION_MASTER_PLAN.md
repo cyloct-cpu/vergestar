@@ -1144,7 +1144,15 @@ InkOS 完整子系统（PlayRunner / PlayStore / StoryGraph / 互动影游向导
 - 修复过程中发现的缺陷：① play 投影 artifacts 必须用局部变量承载（原赋值到 result 上的字段在 AgentSessionResult 类型上不存在且会被 readBookArtifacts 覆盖）；② /agent/turn 与 /agent/jobs 的 playMode 透传双端补全。
 - **T5-Play 项目化至此闭环**：世界构建 → 书架项目 → 真相面板阅读 → 会话游玩。剩余：游玩富 UI（HUD 已有状态面板）、变体回放、世界图片。
 
+
+## 2026-09-12 列表式分镜解析修复 + 回填全链路验收通过（12 镜字段完整回填）
+
+- **根因修复**：Bridge 列表式分镜解析器解析了镜号数字但未写回 currentNumber（flush 的 currentNumber>0 检查永假 → 行永不入库）。修复后真实 gpt-5.5 分镜 12/12 行全部解析（row1: 景别=大特写/时长=2s）。
+- **回填端到端验收通过**：重新轮询分镜 Job 触发投影后，12 个镜头的 ShotSize/Dialogue 全部从分镜表回填（大特写/中景/特写/过肩/全景 + 各镜头对白字幕）。DurationMs 在 Shot 表上由回填后单独更新（当前 shot 表 duration 仍为 0，因 gpt-5.5 用 2s/3s 小时长而既有镜头回填不动 Shot 表——列 TODO）。
+- **镜头参数条 UI 现在可用**：适配视图选中镜头即显示景别/机位/时长/对白。
+
 ## 当前已知限制
+
 
 
 
