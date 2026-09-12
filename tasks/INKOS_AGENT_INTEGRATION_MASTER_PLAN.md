@@ -1158,7 +1158,17 @@ InkOS 完整子系统（PlayRunner / PlayStore / StoryGraph / 互动影游向导
 - durationMs 回填移到 early-return 之前（原放在 revision 字段变化检查后，字段已填时被跳过）；UpdateShotDurationIfZero 简化为无条件更新指定 shot 的 duration_ms（幂等由调用方保证）。
 - 至此 T6 ShotRevision 结构化字段（景别/机位/对白/时长）全链路完成：分镜生成 → 解析 → ShotRevision 回填 → Shot 表 durationMs → 镜头参数条 UI 展示。
 
+
+## 2026-09-12 T4/T5 模式确认卡运行时状态与阻塞分析
+
+- **代码层面**：五模式（同人/番外/仿写/续写/翻译）+ 互动影游 + Play 的 Bridge 确认动作、后端白名单、前端类型/按钮全部就绪且构建/回归通过。
+- **运行时阻塞**：确认卡产出依赖模型正确调用 propose_action——当前 gpt-5.5 在本渠道上行为不稳定（有时正常出确认卡、有时只给文字讨论、有时参数格式非法）。这不是代码问题，是模型适配问题。
+- **已验证可用的模式**：短篇 short_run、剧本 create_script、分镜 create_storyboard、写下一章 write_next——这些模式的确认卡和执行均已实机验收通过。
+- **待渠道/模型稳定后验收**：同人 fanfic_init、番外 spinoff_create、仿写 style_imitation、续写 continuation_import、翻译 translation_create——五模式的 Bridge/后端/前端管线已就绪，只差模型稳定调用 propose_action。
+- **可能的改进**：在 Bridge 规划回合的 backgroundTaskContext 中为每种模式加入更精确的 few-shot 提示，引导模型正确调用 propose_action；或在 Bridge 侧增加文字回复到确认动作的降级解析（当模型只给文字时尝试从文本中提取结构化意图）。
+
 ## 当前已知限制
+
 
 
 
