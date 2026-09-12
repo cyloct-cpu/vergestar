@@ -1100,13 +1100,5 @@ InkOS 完整子系统（PlayRunner / PlayStore / StoryGraph / 互动影游向导
 - 踩坑：后端重启后新路由未加载时，未匹配请求会落入上游 SystemProxyNoRouteHandler（短公共代理形式），表现为"系统渠道不存在或已停用"——遇到该错误先确认后端进程是否为最新构建。
 
 
-## 2026-09-12 T5-Play 游玩 HUD 验收通过（富 UI 第一批）
-
-- **Bridge**：POST /agent/play/state——按会话读取 worlds/<id>/runs/main/projections/{state.md,scene.md} 与建议行动提取。
-- **后端**：POST /api/novel-agent/sessions/:sessionId/play-state 透传（app 包 novel_play_state.go + handler 路由）。
-- **前端**：Play 会话激活时对话区顶部渲染 PlayStatePanel——双 tab（世界状态/当前场景）切换、20s 静默刷新；建议行动解析为可点击按钮（点击即发送该行动继续游玩），正文中的建议行自动剥离。
-- **实机验收**：HUD 双 tab 渲染通过，状态投影内容显示（码头/K-17 等开场状态）。建议按钮需新回合产生建议行后出现（下一回合游玩自然验证）。
-- 踩坑：后端重启后新路由未加载时，未匹配请求会落入上游 SystemProxyNoRouteHandler（短公共代理形式），表现为"系统渠道不存在或已停用"——遇到该错误先确认后端进程是否为最新构建。
-
 ## 当前已知限制
 
