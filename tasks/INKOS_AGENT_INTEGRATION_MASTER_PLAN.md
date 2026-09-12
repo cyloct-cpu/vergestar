@@ -1151,6 +1151,13 @@ InkOS 完整子系统（PlayRunner / PlayStore / StoryGraph / 互动影游向导
 - **回填端到端验收通过**：重新轮询分镜 Job 触发投影后，12 个镜头的 ShotSize/Dialogue 全部从分镜表回填（大特写/中景/特写/过肩/全景 + 各镜头对白字幕）。DurationMs 在 Shot 表上由回填后单独更新（当前 shot 表 duration 仍为 0，因 gpt-5.5 用 2s/3s 小时长而既有镜头回填不动 Shot 表——列 TODO）。
 - **镜头参数条 UI 现在可用**：适配视图选中镜头即显示景别/机位/时长/对白。
 
+
+## 2026-09-12 T6 durationMs 回填端到端验收通过
+
+- 通过后端 API 确认：SH.01=2000ms、SH.02=3000ms、SH.03=2000ms、SH.04=3000ms——与分镜表时长建议一致。之前的 dur=0 是 WAL ro 读可见性问题（非数据丢失）。
+- durationMs 回填移到 early-return 之前（原放在 revision 字段变化检查后，字段已填时被跳过）；UpdateShotDurationIfZero 简化为无条件更新指定 shot 的 duration_ms（幂等由调用方保证）。
+- 至此 T6 ShotRevision 结构化字段（景别/机位/对白/时长）全链路完成：分镜生成 → 解析 → ShotRevision 回填 → Shot 表 durationMs → 镜头参数条 UI 展示。
+
 ## 当前已知限制
 
 

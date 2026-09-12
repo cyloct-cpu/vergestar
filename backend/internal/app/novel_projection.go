@@ -746,7 +746,7 @@ func (s *Service) syncNovelProductionArtifacts(userID, projectID string, artifac
 		if shot, exists := shotBySourceID[sourceID]; exists {
 			// T6：对既有镜头回填分镜表结构化字段（仅空字段，幂等，不覆盖人工修订）。
 			if row, rowOk := novelStoryboardRowForShot(storyboardRows, asset.ShotID); rowOk {
-				s.backfillNovelShotRevisionFields(shot.CurrentRevisionID, row)
+				s.backfillNovelShotRevisionFields(shot.CurrentRevisionID, shot.ID, row)
 			}
 			for _, link := range linksByShot[shot.ID] {
 				if link.SceneID == target.ID {

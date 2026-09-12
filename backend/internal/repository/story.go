@@ -271,3 +271,9 @@ func (r *Repository) UpdateShotRevisionFields(revision *model.ShotRevision) erro
 		"action":       revision.Action,
 	}).Error
 }
+
+// UpdateShotDurationIfZero backfills duration_ms only when currently zero
+// (never overwrites user-set durations).
+func (r *Repository) UpdateShotDurationIfZero(shotID string, durationMs int64) error {
+	return r.db.Model(&model.Shot{}).Where("id = ?", shotID).Update("duration_ms", durationMs).Error
+}
