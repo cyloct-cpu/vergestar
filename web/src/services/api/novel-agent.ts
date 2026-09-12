@@ -141,3 +141,9 @@ export function deleteNovelAgentSession(sessionId: string) {
 export function searchNovelAgentSessions(query: string, page = 1, pageSize = 20) {
     return request<{ sessions: NovelAgentSession[]; total: number; page: number; pageSize: number }>(api.get("/novel-agent/sessions/search", { params: { q: query || undefined, page, page_size: pageSize } }));
 }
+
+export type NovelPlayState = { exists: boolean; stateMd?: string; sceneMd?: string; suggestions: string[] };
+
+export function getNovelPlayState(sessionId: string) {
+    return request<NovelPlayState>(api.post(`/novel-agent/sessions/${encodeURIComponent(sessionId)}/play-state`));
+}

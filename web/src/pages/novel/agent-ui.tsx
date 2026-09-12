@@ -226,3 +226,37 @@ export function parsePlaySuggestions(text: string): PlaySuggestions {
         .trim();
     return { body, actions };
 }
+
+
+/** Play 游玩 HUD：状态投影 + 场景投影 + 建议行动（T5 富 UI）。 */
+export function PlayStatePanel({ stateMd, sceneMd, suggestions, onPick, disabled }: { stateMd: string; sceneMd: string; suggestions: string[]; onPick: (action: string) => void; disabled?: boolean }) {
+    const [tab, setTab] = useState<"state" | "scene">("state");
+    const content = tab === "state" ? stateMd : sceneMd;
+    if (!stateMd && !sceneMd) return null;
+    return (
+        <section className="w-full max-w-[90%] rounded-xl border border-border/60 bg-surface-card/60 p-3" aria-label="游玩状态面板">
+            <div className="flex items-center gap-1.5 border-b border-border/40 pb-2">
+                {(["state", "scene"] as const).map((key) => (
+                    <button
+                        key={key}
+                        type="button"
+                        onClick={() => setTab(key)}
+                        className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${tab === key ? "bg-primary/10 text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                    >
+                        {key === "state" ? "世界状态" : "当前场景"}
+                    </button>
+                ))}
+            </div>
+            <pre className="mt-2 max-h-52 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-5 text-foreground/75">{content}</pre>
+            {suggestions.length ? (
+                <div className="mt-2 flex flex-wrap gap-1.5 border-t border-border/40 pt-2" aria-label="建议行动">
+                    {suggestions.map((action) => (
+                        <button key={action} type="button" disabled={disabled} className="rounded-lg border border-primary/30 bg-primary/5 px-3 py-1.5 text-xs text-primary transition-all hover:bg-primary/10 disabled:opacity-40" onClick={() => onPick(action)}>
+                            {action}
+                        </button>
+                    ))}
+                </div>
+            ) : null}
+        </section>
+    );
+}

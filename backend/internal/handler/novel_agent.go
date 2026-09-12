@@ -126,6 +126,19 @@ func RegisterNovelAgentRoutes(r *gin.RouterGroup, svc *service.Service) {
 		}
 		ok(c, gin.H{"ok": true})
 	})
+	r.POST("/novel-agent/sessions/:sessionId/play-state", func(c *gin.Context) {
+		user, err := currentUser(c, svc)
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		result, err := svc.ReadNovelPlayState(c.Request.Context(), user.ID, c.Param("sessionId"))
+		if err != nil {
+			failService(c, err)
+			return
+		}
+		ok(c, result)
+	})
 	r.GET("/novel-agent/jobs/history", func(c *gin.Context) {
 		user, err := currentUser(c, svc)
 		if err != nil {

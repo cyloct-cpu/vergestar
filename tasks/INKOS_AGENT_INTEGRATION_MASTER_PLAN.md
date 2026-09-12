@@ -1090,33 +1090,23 @@ InkOS 完整子系统（PlayRunner / PlayStore / StoryGraph / 互动影游向导
 - 回归：go build + handler/database 测试通过；后端已重启生效。
 
 - **持久化端到端验证通过**：Job 路径的 user 消息（发起时落库）与 assistant 结果消息（轮询终态补写）已在 DB 确认落库；会话视图接口按时间倒序返回（前端按需处理）。
+
+## 2026-09-12 T5-Play 游玩 HUD 验收通过（富 UI 第一批）
+
+- **Bridge**：POST /agent/play/state——按会话读取 worlds/<id>/runs/main/projections/{state.md,scene.md} 与建议行动提取。
+- **后端**：POST /api/novel-agent/sessions/:sessionId/play-state 透传（app 包 novel_play_state.go + handler 路由）。
+- **前端**：Play 会话激活时对话区顶部渲染 PlayStatePanel——双 tab（世界状态/当前场景）切换、20s 静默刷新；建议行动解析为可点击按钮（点击即发送该行动继续游玩），正文中的建议行自动剥离。
+- **实机验收**：HUD 双 tab 渲染通过，状态投影内容显示（码头/K-17 等开场状态）。建议按钮需新回合产生建议行后出现（下一回合游玩自然验证）。
+- 踩坑：后端重启后新路由未加载时，未匹配请求会落入上游 SystemProxyNoRouteHandler（短公共代理形式），表现为"系统渠道不存在或已停用"——遇到该错误先确认后端进程是否为最新构建。
+
+
+## 2026-09-12 T5-Play 游玩 HUD 验收通过（富 UI 第一批）
+
+- **Bridge**：POST /agent/play/state——按会话读取 worlds/<id>/runs/main/projections/{state.md,scene.md} 与建议行动提取。
+- **后端**：POST /api/novel-agent/sessions/:sessionId/play-state 透传（app 包 novel_play_state.go + handler 路由）。
+- **前端**：Play 会话激活时对话区顶部渲染 PlayStatePanel——双 tab（世界状态/当前场景）切换、20s 静默刷新；建议行动解析为可点击按钮（点击即发送该行动继续游玩），正文中的建议行自动剥离。
+- **实机验收**：HUD 双 tab 渲染通过，状态投影内容显示（码头/K-17 等开场状态）。建议按钮需新回合产生建议行后出现（下一回合游玩自然验证）。
+- 踩坑：后端重启后新路由未加载时，未匹配请求会落入上游 SystemProxyNoRouteHandler（短公共代理形式），表现为"系统渠道不存在或已停用"——遇到该错误先确认后端进程是否为最新构建。
+
 ## 当前已知限制
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-- InkOS 的最终状态校验允许正文先完成、真相文件后以 `state-degraded` 进入可审阅状态；`repair_state` 人工修复入口已实机验收，修复只重建派生状态，不改写正文。
-- 后端完整 `go test ./internal/service` 仍有项目原有的 `TestResourceDeletionWorkerRemovesObjectAndCompletesOutbox` 异步资源删除失败；数据库、handler、Novel Agent 聚焦测试通过。
-- Writer 任务当前仍使用 Bridge 本地 Job 元数据，尚未完全迁移为 Vergestar Task/SSE；服务重启会将运行中任务标记为可重试失败。
-- 当前自定义图片渠道 `api.aixoras.com` 已可被正常网络上下文中的后端访问，但 `gpt-image-2` 本次验收请求返回供应商 524。为避免可能重复计费，系统不会自动重试；成功返回一次后即可完成 `shot_artifacts` 的真实媒体回填验收。
-
-
-
-
-
-
 

@@ -4,11 +4,11 @@ import { App, Button, Form, Input, InputNumber, Modal, Popconfirm, Select, Tag }
 import { ArrowRight, BookOpenText, Check, CheckCircle2, FileOutput, FileText, Film, GitBranch, Hand, History, Lightbulb, Loader2, Pencil, Plus, RotateCcw, Save, SearchCheck, Send, Settings2, Sparkles, Trash2, TrendingUp, X, XCircle, Zap } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router";
 
-import { AgentBubble, AgentConfirmationCard, AgentTaskCard, parsePlaySuggestions } from "@/pages/novel/agent-ui";
+import { AgentBubble, AgentConfirmationCard, AgentTaskCard, PlayStatePanel, parsePlaySuggestions } from "@/pages/novel/agent-ui";
 import { CollectionGrid, PageHeader, WorkspacePage } from "@/components/layout/workspace-page";
 import { WorkspaceErrorState, WorkspaceLoadingState, WorkspaceState } from "@/components/layout/workspace-state";
 import { ModelPicker } from "@/components/model-picker";
-import { cancelNovelAgentJob, deleteNovelAgentSession, getNovelAgentJob, getNovelAgentSessionMessages, listNovelAgentActiveJobs, listNovelAgentJobHistory, listNovelAgentSessions, listNovelAgentSkills, renameNovelAgentSession, runNovelAgentTurn, searchNovelAgentSessions, startNovelAgentJob, type NovelAgentConfirmation, type NovelAgentJob, type NovelAgentSkill } from "@/services/api/novel-agent";
+import { cancelNovelAgentJob, deleteNovelAgentSession, getNovelAgentJob, getNovelAgentSessionMessages, getNovelPlayState, listNovelAgentActiveJobs, listNovelAgentJobHistory, listNovelAgentSessions, listNovelAgentSkills, renameNovelAgentSession, runNovelAgentTurn, searchNovelAgentSessions, startNovelAgentJob, type NovelAgentConfirmation, type NovelAgentJob, type NovelAgentSkill } from "@/services/api/novel-agent";
 import { confirmProjectAssetCandidate, createProject, createProjectCharacter, createProjectUnit, createUnitWorkflow, getProject, linkShotAsset, listProjects, saveProjectShot, updateProjectUnit, type ProjectAssetCandidate, type ProjectDetail, type ProjectSummary, type ProjectUnit } from "@/services/api/projects";
 import { submitBackendGenerationTask } from "@/services/api/generation-task";
 import {
@@ -288,6 +288,14 @@ function NovelAgentHome({ novels, onOpenProject, onCreateProject }: { novels: Pr
         enabled: Boolean(activeProjectId),
     });
     const bookUnits = bookDetail.data?.units || [];
+    const activeSessionMode = sessionList.find((item) => item.id === sessionId)?.mode || "";
+    const isPlaySession = activeSessionMode === "inkos-play-world" || activeSessionMode === "play";
+    const playState = useQuery({
+        queryKey: ["novel-agent", "play-state", sessionId],
+        queryFn: () => getNovelPlayState(sessionId),
+        enabled: isPlaySession && Boolean(sessionId),
+        refetchInterval: 20000,
+    });
     const bookCharacters = (bookDetail.data?.assets || []).filter((asset) => asset.category === "character");
     const bookCoreFiles = Object.keys(bookFoundation.data?.files || {}).filter((path) => path.startsWith("story/") || path.startsWith("chapters/") || path.startsWith("shorts/"));
     useEffect(() => {
@@ -734,6 +742,18 @@ function NovelAgentHome({ novels, onOpenProject, onCreateProject }: { novels: Pr
                                     {streamTool ? (<>正在调用工具：<span className="font-medium text-foreground/70">{streamTool}</span>…</>) : (<>正在生成<span className="inline-block size-1 animate-pulse rounded-full bg-primary" /></>)}
                                 </p>
                             </div>
+                        ) : null}
+                        {isPlaySession && playState.data?.exists ? (
+                            <PlayStatePanel
+                                stateMd={playState.data.stateMd || ""}
+                                sceneMd={playState.data.sceneMd || ""}
+                                suggestions={playState.data.suggestions || []}
+                                disabled={turn.isPending || Boolean(jobProgress)}
+                                onPick={(action) => {
+                                    setMessages((items) => [...items, { role: "user", text: action }]);
+                                    turn.mutate({ message: action });
+                                }}
+                            />
                         ) : null}
                         {jobProgress ? (
                             <AgentTaskCard job={jobProgress} title="生产任务" targetChapters={lastRequestedChapters} onCancel={(jobId) => cancelJob.mutate(jobId)} />

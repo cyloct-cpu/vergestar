@@ -400,10 +400,10 @@ app.post("/agent/books/delete", async (req, res, next) => {
     }
 });
 
-app.get("/agent/play/state", async (req, res, next) => {
+app.post("/agent/play/state", async (req, res, next) => {
     try {
-        const owner = req.header("x-vergestar-novel-agent-user") || String(req.query.userId || "");
-        const sessionId = String(req.query.sessionId || "");
+        const owner = String(req.body?.userId ?? req.header("x-vergestar-novel-agent-user") ?? "");
+        const sessionId = String(req.body?.sessionId || "");
         if (!owner || !sessionId) {
             res.status(400).json({ error: "user and sessionId are required" });
             return;
