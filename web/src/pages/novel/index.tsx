@@ -1142,6 +1142,7 @@ function NovelProjectPanel({ projectId, onBack, onOpenDrama }: { projectId: stri
                         <span className="rounded bg-surface-active px-2 py-0.5 text-xs uppercase tracking-wider text-foreground/70">{meta?.genre || "小说"}</span>
                         <span className="flex items-center gap-1.5"><FileText className="size-3.5" />{units.length} 章</span>
                         <span className="flex items-center gap-1.5"><Zap className="size-3.5" />{totalWords.toLocaleString()} 字</span>
+                        <span className="flex items-center gap-1.5"><CheckCircle2 className="size-3.5" />{units.filter((unit) => unit.status === "completed").length} 章已入正史</span>
                     </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
@@ -1269,7 +1270,7 @@ function NovelProjectPanel({ projectId, onBack, onOpenDrama }: { projectId: stri
                                     const indicator = chapterStatusSymbol(unit.status);
                                     return (
                                         <li key={unit.id}>
-                                            <button type="button" className={`group/chapter flex w-full items-center gap-2 rounded px-1 py-1 text-left text-[15px] leading-6 transition-colors hover:bg-surface-hover ${activeUnit?.id === unit.id ? "text-foreground" : "text-muted-foreground"}`} onClick={() => { setSelectedUnitId(unit.id); setChapterTitle(unit.title); setChapterText(unit.sourceText); }}>
+                                            <button type="button" className={`group/chapter flex w-full items-center gap-2 rounded px-1 py-1 text-left text-[15px] leading-6 transition-colors hover:bg-surface-hover ${activeUnit?.id === unit.id ? "text-foreground" : "text-muted-foreground"}`} onClick={() => { setSelectedUnitId(unit.id); setChapterTitle(unit.title); setChapterText(unit.sourceText); if (unit.sourceText) setReaderOpen(true); }}>
                                                 <span className={`shrink-0 text-[13px] ${indicator.className}`}>{indicator.symbol}</span>
                                                 <span className="truncate flex-1">{String(index + 1).padStart(2, "0")} {unit.title}</span>
                                                 <span className="shrink-0 text-[13px] tabular-nums text-muted-foreground/50">{(unit.wordCount || 0).toLocaleString()}</span>
@@ -1292,10 +1293,15 @@ function NovelProjectPanel({ projectId, onBack, onOpenDrama }: { projectId: stri
                         <div className="px-3 pb-3">
                             <div className="grid gap-0.5">
                                 {characterAssets.slice(0, 8).map((asset) => (
-                                    <div key={asset.id} className="flex items-center justify-between rounded px-1 py-1 text-[15px] leading-6 text-muted-foreground">
-                                        <span className="truncate">{asset.title}</span>
-                                        <span className={`shrink-0 text-[11px] ${asset.character?.definition?.roleCategory === "主要角色" ? "text-amber-500" : "text-muted-foreground/50"}`}>{asset.character?.definition?.roleCategory === "主要角色" ? "主要" : "配角"}</span>
-                                    </div>
+                                    <details key={asset.id} className="group/char rounded px-1 py-0.5">
+                                        <summary className="flex cursor-pointer list-none items-center justify-between text-[15px] leading-6 text-muted-foreground transition-colors hover:text-foreground">
+                                            <span className="truncate">{asset.title}</span>
+                                            <span className={`shrink-0 text-[11px] ${asset.character?.definition?.roleCategory === "主要角色" ? "text-amber-500" : "text-muted-foreground/50"}`}>{asset.character?.definition?.roleCategory === "主要角色" ? "主要" : "配角"}</span>
+                                        </summary>
+                                        <div className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap rounded bg-surface-active/60 px-2 py-1.5 text-[11px] leading-5 text-foreground/65">
+                                            {String(asset.character?.definition?.sourceMarkdown || asset.character?.definition?.description || "暂无角色档案").slice(0, 1200)}
+                                        </div>
+                                    </details>
                                 ))}
                                 {!characterAssets.length ? <p className="py-2 text-sm italic text-muted-foreground/50">角色会随 InkOS 建书和剧本确认进入这里。</p> : null}
                             </div>
