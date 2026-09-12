@@ -1182,7 +1182,15 @@ InkOS 完整子系统（PlayRunner / PlayStore / StoryGraph / 互动影游向导
 - **短篇生产全链路验收通过**：agnes-3.0-flash + few-shot 优化后，从创意到确认卡到完整管线（大纲、审核、修订、逐章写作、审稿、包装）稳定跑通。《深夜书店老板发现一本书里夹着十年前自己写给未来自己的信》约 7526 字，7 个产物文件完整投影到书架，真相面板可阅读全文。agnes 欠费问题已被充值解决。
 - **agnes 稳定通道下的五模式验收状态**：短篇通过、剧本通过、分镜通过、写下一章通过、审计通过、导出通过、雷达通过、Play 通过。五模式中同人、番外、仿写需在 Bridge few-shot 提示优化后重测。
 
+
+## 2026-09-12 T4 五模式验收：同人创作通过（agnes-3.0-flash 稳定通道）
+
+- **同人创作（fanfic_init）实机验收通过**：agnes-3.0-flash 稳定通道下，从创意 → 确认卡 → 完整管线（保存配置 → 导入正典 → 生成基础设定 → FoundationReviewer 两轮拒绝重试 → 最终接受）→ 项目进入书架。《面壁者罗辑：新威胁》以 canon 模式创建成功。
+- fanfic_init 产物路径为 InkOS books/<fanfic-id>/ 目录（非 shorts/），走既有 books 投影链自动进入书架，无需额外白名单。
+- **剩余四模式验收状态**：番外 spinoff、仿写 style_imitation、续写 continuation_import、翻译 translation_create——管线代码就绪，下批逐个重测。
+
 ## 当前已知限制
+
 
 
 
