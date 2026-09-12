@@ -2155,6 +2155,11 @@ function NovelShotGenerationPanel({
     useEffect(() => {
         setSelectedReferenceIds(selectedSceneCharacterAssetIds);
     }, [selectedScene?.selectionId]);
+    const selectedShotRevision = useMemo(() => {
+        if (!selectedShot) return undefined;
+        return (detail.shotRevisions || []).find((revision) => revision.shotId === selectedShot.id) ||
+            (detail.shotRevisions || []).find((revision) => revision.imagePrompt && revision.shotId === selectedShot.id);
+    }, [detail.shotRevisions, selectedShot?.id]);
     const activeTask = useMemo(() => {
         if (!selectedShot) return undefined;
         return (detail.tasks || [])
@@ -2283,6 +2288,14 @@ function NovelShotGenerationPanel({
                 镜头生成
             </h3>
             <p className="mt-2 text-xs leading-5 text-foreground/55">选择已生成镜头的场次，确认后把该镜头提交到现有图片或视频任务链路。</p>
+            {selectedShot && selectedShotRevision && (selectedShotRevision.shotSize || selectedShotRevision.cameraAngle || selectedShotRevision.dialogue || selectedShot.durationMs) ? (
+                <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-border/50 bg-surface-active/50 px-3 py-2 text-xs text-foreground/70" aria-label="镜头参数">
+                    {selectedShotRevision.shotSize ? <span>景别：<span className="font-medium text-foreground">{selectedShotRevision.shotSize}</span></span> : null}
+                    {selectedShotRevision.cameraAngle && selectedShotRevision.cameraAngle !== selectedShotRevision.shotSize ? <span>机位：<span className="font-medium text-foreground">{selectedShotRevision.cameraAngle}</span></span> : null}
+                    {selectedShot.durationMs ? <span>时长：<span className="font-medium tabular-nums text-foreground">{Math.round(selectedShot.durationMs / 1000)}s</span></span> : null}
+                    {selectedShotRevision.dialogue ? <span className="w-full truncate">对白/字幕：<span className="text-foreground">{selectedShotRevision.dialogue}</span></span> : null}
+                </div>
+            ) : null}
             <div className="mt-3 grid gap-2 md:grid-cols-[180px_150px_minmax(0,1fr)_auto]">
                 <Select
                     size="small"

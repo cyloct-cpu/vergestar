@@ -251,3 +251,23 @@ func (r *Repository) StoryAgentMessageExists(sessionID, messageID string) (bool,
 	err := r.db.Model(&model.StoryAgentMessage{}).Where("session_id = ? AND id = ?", sessionID, messageID).Count(&count).Error
 	return count > 0, err
 }
+
+// ShotRevisionByID fetches a single shot revision by ID (backfill read path).
+func (r *Repository) ShotRevisionByID(revisionID string) (*model.ShotRevision, error) {
+	var revision model.ShotRevision
+	if err := r.db.First(&revision, "id = ?", revisionID).Error; err != nil {
+		return nil, err
+	}
+	return &revision, nil
+}
+
+// UpdateShotRevisionFields persists structured storyboard fields on an
+// existing revision (T6 backfill). Only the columns provided are updated.
+func (r *Repository) UpdateShotRevisionFields(revision *model.ShotRevision) error {
+	return r.db.Model(&model.ShotRevision{}).Where("id = ?", revision.ID).Updates(map[string]any{
+		"shot_size":    revision.ShotSize,
+		"camera_angle": revision.CameraAngle,
+		"dialogue":     revision.Dialogue,
+		"action":       revision.Action,
+	}).Error
+}
